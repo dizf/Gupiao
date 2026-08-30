@@ -1,0 +1,7 @@
+.stock_cache/
+screen_config.json
+jqdata.json
+__pycache__/
+build/
+dist/
+*.spec
