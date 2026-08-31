@@ -14,7 +14,7 @@ from pathlib import Path
 import sys
 import threading
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
 from datetime import datetime, timedelta
 from io import StringIO
 from typing import Any, Callable
@@ -69,10 +69,11 @@ CACHE_DIR = Path.cwd() / ".stock_cache"
 HOT_BOARD_CACHE_TTL = 30 * 60
 KLINE_CACHE_TTL = 24 * 60 * 60
 SIMILAR_WINDOWS = (5, 10, 20, 60)
-SIMILAR_HISTORY_LIMIT = 240
+SIMILAR_HISTORY_LIMIT = 120
 SIMILAR_FORWARD_DAYS = (1, 3, 5, 10)
 SIMILAR_TOP_N = 10
-SIMILAR_WORKERS = 12
+SIMILAR_WORKERS = 8
+SIMILAR_CANDIDATE_LIMIT = 300
 
 
 @dataclass
@@ -239,7 +240,7 @@ def fetch_clist(fs: str, fields: str, extra: dict[str, str] | None = None) -> li
 
 
 def fetch_spot() -> pd.DataFrame:
-    fields = "f12,f14,f2,f3,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62"
+    fields = "f12,f14,f2,f3,f6,f8,f9,f10,f15,f16,f17,f18,f20,f21,f23,f62"
     rows = fetch_clist(
         "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81,m:1+t:13",
         fields,
@@ -252,6 +253,7 @@ def fetch_spot() -> pd.DataFrame:
         "f14": "名称",
         "f2": "最新价",
         "f3": "涨跌幅",
+        "f6": "成交额",
         "f8": "换手率",
         "f9": "市盈率",
         "f10": "量比",
@@ -268,6 +270,7 @@ def fetch_spot() -> pd.DataFrame:
     numeric_cols = [
         "最新价",
         "涨跌幅",
+        "成交额",
         "换手率",
         "市盈率",
         "量比",
@@ -660,16 +663,23 @@ def find_similar_stocks(
     code: str,
     windows: tuple[int, ...] = SIMILAR_WINDOWS,
     top_n: int = SIMILAR_TOP_N,
-    workers: int = 4,
+    workers: int = SIMILAR_WORKERS,
     log_callback: Callable[[str], None] = log,
+    candidate_limit: int = SIMILAR_CANDIDATE_LIMIT,
+    stop_event: threading.Event | None = None,
+    result_callback: Callable[[pd.DataFrame], None] | None = None,
 ) -> pd.DataFrame:
-    """查找全 A 股中与目标股票近期走势最相似的历史片段。"""
+    """查找与目标股票近期走势最相似的历史片段。"""
     code = str(code).strip().zfill(6)
     if not code.isdigit() or len(code) != 6:
         raise ValueError("股票代码必须是 6 位数字")
     windows = _similarity_windows(windows)
     if top_n < 1:
         raise ValueError("返回数量必须大于 0")
+    if candidate_limit < 0:
+        raise ValueError("候选数量不能为负数")
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
 
     target_hist = fetch_kline(code, limit=SIMILAR_HISTORY_LIMIT)
     required = {"日期", "收盘", "最高", "最低", "成交量", "涨跌幅"}
@@ -688,7 +698,15 @@ def find_similar_stocks(
         (candidates["代码"] != code)
         & ~candidates["名称"].str.contains("ST|退", regex=True, case=False)
         & (pd.to_numeric(candidates["最新价"], errors="coerce") > 0)
-    ][["代码", "名称"]].drop_duplicates("代码")
+    ].drop_duplicates("代码")
+    candidates = candidates.sort_values(
+        ["成交额", "换手率", "涨跌幅"],
+        ascending=[False, False, False],
+        na_position="last",
+    )
+    if candidate_limit:
+        candidates = candidates.head(candidate_limit)
+    candidates = candidates[["代码", "名称"]]
     if candidates.empty:
         raise RuntimeError("没有可搜索的股票")
 
@@ -699,7 +717,8 @@ def find_similar_stocks(
             for window in usable_windows
         )
     )
-    log_callback(f"开始扫描全A股历史日K，共 {len(candidates)} 只...")
+    scope = "全A股" if not candidate_limit else f"活跃候选前 {candidate_limit} 只"
+    log_callback(f"开始扫描{scope}历史日K，共 {len(candidates)} 只...")
 
     top_matches: dict[int, list[dict[str, Any]]] = {
         window: [] for window in usable_windows
@@ -708,45 +727,73 @@ def find_similar_stocks(
     available = 0
     failed = 0
     rows = list(candidates.itertuples(index=False, name=None))
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {
-            pool.submit(fetch_kline, candidate_code, SIMILAR_HISTORY_LIMIT): (
-                candidate_code,
-                candidate_name,
-            )
-            for candidate_code, candidate_name in rows
-        }
-        for future in as_completed(futures):
-            candidate_code, candidate_name = futures[future]
-            completed += 1
-            try:
-                hist = future.result()
-                if not hist.empty and required.issubset(hist.columns):
-                    candidate_matches = _best_similarity_matches(
-                        target_hist,
-                        hist,
-                        code,
-                        candidate_code,
-                        candidate_name,
-                        usable_windows,
-                    )
-                    if candidate_matches:
-                        available += 1
-                    for match in candidate_matches:
-                        window = int(match["窗口"].removesuffix("日"))
-                        top_matches[window].append(match)
-                        top_matches[window].sort(
-                            key=lambda item: item["相似度"], reverse=True
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = {
+        pool.submit(fetch_kline, candidate_code, SIMILAR_HISTORY_LIMIT): (
+            candidate_code,
+            candidate_name,
+        )
+        for candidate_code, candidate_name in rows
+    }
+    stopped = False
+    try:
+        while futures:
+            if stop_event and stop_event.is_set():
+                stopped = True
+                break
+            done, _ = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                candidate_code, candidate_name = futures.pop(future)
+                completed += 1
+                try:
+                    hist = future.result()
+                    if not hist.empty and required.issubset(hist.columns):
+                        candidate_matches = _best_similarity_matches(
+                            target_hist,
+                            hist,
+                            code,
+                            candidate_code,
+                            candidate_name,
+                            usable_windows,
                         )
-                        del top_matches[window][top_n:]
-                else:
+                        if candidate_matches:
+                            available += 1
+                        for match in candidate_matches:
+                            window = int(match["窗口"].removesuffix("日"))
+                            top_matches[window].append(match)
+                            top_matches[window].sort(
+                                key=lambda item: item["相似度"], reverse=True
+                            )
+                            del top_matches[window][top_n:]
+                        if candidate_matches and result_callback:
+                            partial = pd.DataFrame(
+                                [
+                                    match
+                                    for window in usable_windows
+                                    for match in top_matches[window]
+                                ]
+                            )
+                            result_callback(partial)
+                    else:
+                        failed += 1
+                except Exception:  # noqa: BLE001
                     failed += 1
-            except Exception:  # noqa: BLE001
-                failed += 1
-            if completed % 100 == 0 or completed == len(rows):
-                log_callback(
-                    f"历史K线进度 {completed}/{len(rows)}，已比较 {available}，失败 {failed}"
-                )
+                if completed % 100 == 0 or completed == len(rows):
+                    log_callback(
+                        f"历史K线进度 {completed}/{len(rows)}，已比较 {available}，失败 {failed}"
+                    )
+                if stop_event and stop_event.is_set():
+                    stopped = True
+                    break
+            if stopped:
+                break
+    finally:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=not stopped, cancel_futures=True)
+
+    if stopped:
+        log_callback(f"分析已停止，保留已完成的 {completed} 只结果")
 
     matches = [
         match
@@ -1193,6 +1240,12 @@ def main() -> int:
         default=SIMILAR_WORKERS,
         help="相似走势历史K线并发请求数",
     )
+    parser.add_argument(
+        "--similar-candidates",
+        type=int,
+        default=SIMILAR_CANDIDATE_LIMIT,
+        help="相似走势候选数量，0 表示全A股",
+    )
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
@@ -1205,6 +1258,7 @@ def main() -> int:
                 windows=_similarity_windows(args.similar_window),
                 top_n=args.similar_top_n,
                 workers=args.similar_workers,
+                candidate_limit=args.similar_candidates,
             )
         except Exception as exc:  # noqa: BLE001
             log(f"相似走势分析失败：{exc}")

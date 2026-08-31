@@ -548,6 +548,13 @@ class ScreenApp(tk.Tk):
         ttk.Entry(controls, textvariable=top_n_var, width=8).grid(
             row=0, column=5, padx=(0, 12)
         )
+        ttk.Label(controls, text="候选数量(0=全部)").grid(
+            row=0, column=6, padx=(0, 5)
+        )
+        candidate_limit_var = StringVar(value=str(screen.SIMILAR_CANDIDATE_LIMIT))
+        ttk.Entry(controls, textvariable=candidate_limit_var, width=8).grid(
+            row=0, column=7, padx=(0, 12)
+        )
 
         result_frame = ttk.Frame(window, padding=(10, 0, 10, 10))
         result_frame.grid(row=1, column=0, sticky="nsew")
@@ -567,12 +574,16 @@ class ScreenApp(tk.Tk):
         log_text = tk.Text(log_frame, height=6, wrap="none", state="disabled")
         log_text.grid(row=0, column=0, sticky="ew")
         search_button = ttk.Button(controls, text="开始分析")
-        search_button.grid(row=0, column=6, padx=(0, 8))
+        search_button.grid(row=0, column=8, padx=(0, 8))
         save_button = ttk.Button(controls, text="保存 CSV", state="disabled")
-        save_button.grid(row=0, column=7)
+        save_button.grid(row=0, column=9)
 
         messages: queue.Queue[tuple[str, object]] = queue.Queue()
-        state = {"running": False, "result": pd.DataFrame()}
+        state = {
+            "running": False,
+            "result": pd.DataFrame(),
+            "stop_event": threading.Event(),
+        }
 
         def append_log(message: str) -> None:
             log_text.configure(state="normal")
@@ -597,6 +608,9 @@ class ScreenApp(tk.Tk):
 
         def start_search() -> None:
             if state["running"]:
+                state["stop_event"].set()
+                search_button.configure(state="disabled")
+                append_log("正在停止分析，等待当前请求结束...")
                 return
             code = code_var.get().strip()
             if not code.isdigit() or len(code) > 6:
@@ -612,18 +626,23 @@ class ScreenApp(tk.Tk):
                 )
                 if top_n < 1:
                     raise ValueError
+                candidate_limit = int(candidate_limit_var.get().strip())
+                if candidate_limit < 0:
+                    raise ValueError
             except ValueError:
                 messagebox.showerror(
-                    "参数错误", "返回数量必须是大于 0 的整数", parent=window
+                    "参数错误", "返回数量必须大于 0，候选数量不能为负数", parent=window
                 )
                 return
 
             state["running"] = True
             state["result"] = pd.DataFrame()
-            search_button.configure(state="disabled")
+            state["stop_event"].clear()
+            search_button.configure(state="normal", text="停止分析")
             save_button.configure(state="disabled")
             tree.delete(*tree.get_children())
-            append_log("开始分析，请等待历史K线扫描完成...")
+            scope = "全 A 股" if candidate_limit == 0 else f"活跃候选前 {candidate_limit} 只"
+            append_log(f"开始分析（{scope}），匹配结果将实时显示...")
 
             def worker() -> None:
                 try:
@@ -633,6 +652,9 @@ class ScreenApp(tk.Tk):
                         top_n=top_n,
                         workers=screen.SIMILAR_WORKERS,
                         log_callback=lambda message: messages.put(("log", message)),
+                        candidate_limit=candidate_limit,
+                        stop_event=state["stop_event"],
+                        result_callback=lambda result: messages.put(("result", result)),
                     )
                     messages.put(("result", result))
                 except Exception as exc:  # noqa: BLE001
@@ -663,7 +685,13 @@ class ScreenApp(tk.Tk):
                         messagebox.showerror("分析失败", str(payload), parent=window)
                     elif kind == "done":
                         state["running"] = False
-                        search_button.configure(state="normal")
+                        search_button.configure(state="normal", text="开始分析")
+                        save_button.configure(
+                            state="normal"
+                            if isinstance(state["result"], pd.DataFrame)
+                            and not state["result"].empty
+                            else "disabled"
+                        )
             except queue.Empty:
                 pass
             window.after(100, poll_messages)
@@ -672,6 +700,7 @@ class ScreenApp(tk.Tk):
         save_button.configure(command=save_similarity_result)
 
         def close_window() -> None:
+            state["stop_event"].set()
             self.similarity_window = None
             window.destroy()
 
