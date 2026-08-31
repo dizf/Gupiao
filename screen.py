@@ -10,11 +10,12 @@ from dataclasses import asdict, dataclass
 from functools import lru_cache
 import json
 import math
+import os
 from pathlib import Path
 import sys
 import threading
 import time
-from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, as_completed, wait
+from concurrent.futures import FIRST_COMPLETED, ThreadPoolExecutor, wait
 from datetime import datetime, timedelta
 from io import StringIO
 from typing import Any, Callable
@@ -65,7 +66,8 @@ SESSION.headers.update(
 REQUEST_INTERVAL = 0.15
 REQUEST_LOCK = threading.Lock()
 LAST_REQUEST_AT = 0.0
-CACHE_DIR = Path.cwd() / ".stock_cache"
+DATA_DIR = Path(os.environ.get("GUPIAO_DATA_DIR", Path.cwd()))
+CACHE_DIR = DATA_DIR / ".stock_cache"
 HOT_BOARD_CACHE_TTL = 30 * 60
 KLINE_CACHE_TTL = 24 * 60 * 60
 SIMILAR_WINDOWS = (5, 10, 20, 60)
@@ -1151,12 +1153,17 @@ def run_screen(
     config: ScreenConfig | None = None,
     workers: int = 2,
     log_callback: Callable[[str], None] = log,
+    stop_event: threading.Event | None = None,
 ) -> pd.DataFrame:
     config = config or ScreenConfig()
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
     clear_data_cache()
     log_callback(f"本地缓存：历史日K按天缓存，热点板块 {HOT_BOARD_CACHE_TTL // 60} 分钟缓存")
     log_callback("1/4 使用东方财富拉取行情，过滤基础条件...")
     spot = fetch_spot()
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
     if spot.empty:
         raise RuntimeError("未取到行情")
     basic = filter_basic(spot, config)
@@ -1182,6 +1189,8 @@ def run_screen(
         log_callback("2/4 已关闭热点板块筛选")
         basic["热点板块"] = [[] for _ in range(len(basic))]
         hot = basic
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
     if hot.empty:
         log_callback("没有符合当前基础条件的股票。")
         return pd.DataFrame()
@@ -1198,19 +1207,44 @@ def run_screen(
     else:
         log_callback("3/4 已关闭强于大盘筛选")
 
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
     log_callback("4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时...")
     picked: list[dict[str, Any]] = []
     rows = [r for _, r in hot.iterrows()]
-    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-        futures = {
-            pool.submit(inspect_one, row, config, log_callback): row["代码"]
-            for row in rows
-        }
-        for future in as_completed(futures):
-            item = future.result()
-            if item:
-                picked.append(item)
-                log_callback(f"   命中 {item['代码']} {item['名称']}")
+    pool = ThreadPoolExecutor(max_workers=max(1, workers))
+    futures = {
+        pool.submit(inspect_one, row, config, log_callback): row["代码"]
+        for row in rows
+    }
+    stopped = False
+    try:
+        while futures:
+            if stop_event and stop_event.is_set():
+                stopped = True
+                break
+            done, _ = wait(futures, timeout=0.2, return_when=FIRST_COMPLETED)
+            for future in done:
+                futures.pop(future)
+                try:
+                    item = future.result()
+                except Exception as exc:  # noqa: BLE001
+                    log_callback(f"   复检失败：{exc}")
+                    item = None
+                if item:
+                    picked.append(item)
+                    log_callback(f"   命中 {item['代码']} {item['名称']}")
+                if stop_event and stop_event.is_set():
+                    stopped = True
+                    break
+            if stopped:
+                break
+    finally:
+        for future in futures:
+            future.cancel()
+        pool.shutdown(wait=not stopped, cancel_futures=True)
+    if stopped:
+        log_callback(f"选股已停止，保留已完成的 {len(picked)} 只结果")
     picked.sort(key=lambda x: x["涨跌幅"], reverse=True)
     result = pd.DataFrame(picked)
     log_callback(f"===== 最终结果 {len(result)} 只 =====")

@@ -1,0 +1,77 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1">
+    <title>A股选股</title>
+    <style>
+        :root { color-scheme: light; font-family: sans-serif; background: #f5f7fb; color: #172033; }
+        * { box-sizing: border-box; }
+        body { margin: 0; padding: 14px; }
+        h1 { margin: 0 0 12px; font-size: 22px; }
+        h2 { margin: 0 0 10px; font-size: 17px; }
+        section { background: white; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 5px #d9deea; }
+        .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #5d6678; }
+        input, select, button { font: inherit; border: 1px solid #ccd3df; border-radius: 7px; padding: 9px; background: white; }
+        button { border: 0; color: white; background: #2563eb; font-weight: 600; }
+        button.secondary { background: #64748b; }
+        button.stop { background: #dc2626; }
+        .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
+        #status { font-size: 13px; color: #2563eb; min-height: 18px; }
+        #log { max-height: 130px; overflow: auto; white-space: pre-wrap; color: #667085; font-size: 11px; }
+        #results { overflow-x: auto; font-size: 11px; }
+        table { border-collapse: collapse; width: 100%; min-width: 620px; }
+        th, td { border-bottom: 1px solid #e6eaf0; padding: 6px; text-align: left; white-space: nowrap; }
+        th { background: #eef3ff; color: #334155; position: sticky; top: 0; }
+        .hint { color: #667085; font-size: 11px; margin-top: 7px; }
+    </style>
+</head>
+<body>
+    <h1>A股选股与异动监控</h1>
+    <section>
+        <h2>选股参数</h2>
+        <div class="grid">
+            <label>涨幅最小值 %<input id="pctMin" type="number" value="3" step="0.1"></label>
+            <label>涨幅最大值 %<input id="pctMax" type="number" value="5" step="0.1"></label>
+            <label>换手率最小值 %<input id="turnoverMin" type="number" value="5" step="0.1"></label>
+            <label>换手率最大值 %<input id="turnoverMax" type="number" value="10" step="0.1"></label>
+            <label>量比最小值<input id="volumeRatioMin" type="number" value="1.5" step="0.1"></label>
+            <label>实时刷新秒数<input id="monitorInterval" type="number" value="60" min="1"></label>
+            <label>急拉分钟窗口<input id="rapidWindow" type="number" value="5" min="1"></label>
+            <label>急拉最小涨幅 %<input id="rapidPct" type="number" value="2" step="0.1"></label>
+            <label>急拉最小放量<input id="rapidVolume" type="number" value="1.5" step="0.1"></label>
+            <label>选股候选数量<input id="screenLimit" type="number" value="300" min="1"></label>
+        </div>
+        <div class="actions">
+            <button id="screenButton">开始选股</button>
+            <button id="monitorButton" class="secondary">实时监控</button>
+        </div>
+    </section>
+    <section>
+        <h2>相似走势分析</h2>
+        <div class="grid">
+            <label>股票代码<input id="similarCode" inputmode="numeric" placeholder="例如 000681"></label>
+            <label>匹配窗口
+                <select id="similarWindow"><option>全部</option><option>5</option><option>10</option><option>20</option><option>60</option></select>
+            </label>
+            <label>候选数量（0=全部）<input id="similarLimit" type="number" value="300" min="0"></label>
+            <label>每窗口返回<input id="similarTopN" type="number" value="10" min="1"></label>
+        </div>
+        <div class="actions">
+            <button id="similarButton">开始分析</button>
+            <button id="exportButton" class="secondary">导出结果</button>
+        </div>
+        <div class="hint">相似结果会在每只候选完成后实时更新，分析过程中可停止。</div>
+    </section>
+    <section>
+        <div id="status">就绪</div>
+        <div id="log"></div>
+    </section>
+    <section>
+        <h2>结果</h2>
+        <div id="results">暂无结果</div>
+    </section>
+    <script src="app.js"></script>
+</body>
+</html>
