@@ -6,6 +6,7 @@ import json
 import math
 import queue
 import threading
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import BooleanVar, END, StringVar, filedialog, messagebox
@@ -23,7 +24,7 @@ CONFIG_PATH = Path.cwd() / "screen_config.json"
 class ScreenApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
-        self.title("A股尾盘选股")
+        self.title("A股选股与异动监控")
         self.geometry("1120x760")
         self.minsize(960, 620)
         self.value_vars: dict[str, StringVar] = {}
@@ -31,6 +32,9 @@ class ScreenApp(tk.Tk):
         self.result = pd.DataFrame()
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
         self.running = False
+        self.monitoring = False
+        self.monitor_stop = threading.Event()
+        self.similarity_window: tk.Toplevel | None = None
         self._build()
         self._load_config()
         self.after(100, self._poll_messages)
@@ -41,7 +45,7 @@ class ScreenApp(tk.Tk):
 
         buttons = ttk.Frame(self, padding=(10, 8))
         buttons.grid(row=0, column=0, sticky="ew")
-        buttons.columnconfigure(5, weight=1)
+        buttons.columnconfigure(6, weight=1)
         self.start_button = ttk.Button(buttons, text="开始选股", command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
         ttk.Button(buttons, text="恢复默认", command=self._reset_defaults).grid(
@@ -54,9 +58,16 @@ class ScreenApp(tk.Tk):
             buttons, text="保存结果 CSV", command=self._save_result, state="disabled"
         )
         self.save_result_button.grid(row=0, column=3, padx=8)
+        ttk.Button(buttons, text="相似走势", command=self._open_similarity).grid(
+            row=0, column=4, padx=8
+        )
+        self.monitor_button = ttk.Button(
+            buttons, text="实时监控", command=self._toggle_monitor
+        )
+        self.monitor_button.grid(row=0, column=5, padx=8)
         self.status_var = StringVar(value="就绪")
         ttk.Label(buttons, textvariable=self.status_var).grid(
-            row=0, column=5, sticky="e"
+            row=0, column=6, sticky="e"
         )
 
         notebook = ttk.Notebook(self)
@@ -159,7 +170,15 @@ class ScreenApp(tk.Tk):
         )
         row = self._value_row(parent, row, "skip_open_minutes", "跳过开盘前 N 根分时", "分钟")
         row = self._check_row(parent, row, "enable_stronger_than_index", "走势强于上证指数")
-        self._check_row(parent, row, "enable_tail_high", "14:30 后创当日新高")
+        row = self._check_row(parent, row, "enable_tail_high", "14:30 后创当日新高")
+        row = self._check_value_row(
+            parent, row, "enable_rapid_rise", "分时急速拉升", "rapid_rise_window", "分钟窗口"
+        )
+        row = self._value_row(parent, row, "rapid_rise_pct", "急拉最小涨幅", "%")
+        row = self._value_row(
+            parent, row, "rapid_volume_multiple", "急拉最小放量", "倍"
+        )
+        self._value_row(parent, row, "monitor_interval", "实时刷新间隔", "秒")
 
     def _check_var(self, key: str) -> BooleanVar:
         self.bool_vars[key] = BooleanVar(value=True)
@@ -302,6 +321,14 @@ class ScreenApp(tk.Tk):
             skip_open_minutes=self._read_int("skip_open_minutes", "跳过开盘分时"),
             enable_stronger_than_index=self.bool_vars["enable_stronger_than_index"].get(),
             enable_tail_high=self.bool_vars["enable_tail_high"].get(),
+            enable_rapid_rise=self.bool_vars["enable_rapid_rise"].get(),
+            rapid_rise_window=self._read_int("rapid_rise_window", "急拉分钟窗口"),
+            rapid_rise_pct=self._read_float("rapid_rise_pct", "急拉最小涨幅") or 0,
+            rapid_volume_multiple=self._read_float(
+                "rapid_volume_multiple", "急拉最小放量"
+            )
+            or 0,
+            monitor_interval=self._read_int("monitor_interval", "实时刷新间隔"),
         )
         if config.pct_min > config.pct_max or config.turnover_min > config.turnover_max:
             raise ValueError("范围的最小值不能大于最大值")
@@ -317,6 +344,12 @@ class ScreenApp(tk.Tk):
             raise ValueError("近20日高点下限必须在 0 到 100% 之间")
         if config.max_ma5_bias < 0:
             raise ValueError("5日线最大偏离不能为负数")
+        if config.rapid_rise_window < 1:
+            raise ValueError("急拉分钟窗口必须大于 0")
+        if config.rapid_rise_pct < 0 or config.rapid_volume_multiple < 0:
+            raise ValueError("急拉涨幅和放量倍数不能为负数")
+        if config.monitor_interval < 1:
+            raise ValueError("实时刷新间隔必须大于 0")
         return config
 
     def _save_config(self) -> bool:
@@ -345,10 +378,42 @@ class ScreenApp(tk.Tk):
         self.result = pd.DataFrame()
         self._clear_result()
         self.running = True
+        self.monitoring = False
+        self.monitor_stop.clear()
         self.start_button.configure(state="disabled")
+        self.monitor_button.configure(state="disabled")
         self.save_result_button.configure(state="disabled")
         self.status_var.set("正在选股...")
         worker = threading.Thread(target=self._run_worker, args=(config,), daemon=True)
+        worker.start()
+
+    def _toggle_monitor(self) -> None:
+        if self.monitoring:
+            self.monitor_stop.set()
+            self.monitor_button.configure(state="disabled")
+            self.status_var.set("正在停止实时监控...")
+            return
+        if self.running:
+            return
+        try:
+            config = self._read_config()
+        except ValueError as exc:
+            messagebox.showerror("参数错误", str(exc))
+            return
+        self._save_config()
+        self._clear_log()
+        self.result = pd.DataFrame()
+        self._clear_result()
+        self.running = True
+        self.monitoring = True
+        self.monitor_stop.clear()
+        self.start_button.configure(state="disabled")
+        self.monitor_button.configure(text="停止监控")
+        self.save_result_button.configure(state="disabled")
+        self.status_var.set("正在实时监控...")
+        worker = threading.Thread(
+            target=self._run_monitor_worker, args=(config,), daemon=True
+        )
         worker.start()
 
     def _run_worker(self, config: screen.ScreenConfig) -> None:
@@ -359,6 +424,23 @@ class ScreenApp(tk.Tk):
                 log_callback=lambda message: self.messages.put(("log", message)),
             )
             self.messages.put(("result", result))
+        except Exception as exc:  # noqa: BLE001
+            self.messages.put(("error", str(exc)))
+        finally:
+            self.messages.put(("done", None))
+
+    def _run_monitor_worker(self, config: screen.ScreenConfig) -> None:
+        live_config = replace(config, enable_tail_high=False)
+        try:
+            while not self.monitor_stop.is_set():
+                result = screen.run_screen(
+                    config=live_config,
+                    workers=2,
+                    log_callback=lambda message: self.messages.put(("log", message)),
+                )
+                self.messages.put(("result", result))
+                if self.monitor_stop.wait(config.monitor_interval):
+                    break
         except Exception as exc:  # noqa: BLE001
             self.messages.put(("error", str(exc)))
         finally:
@@ -378,11 +460,17 @@ class ScreenApp(tk.Tk):
                     messagebox.showerror("运行失败", str(payload))
                 elif kind == "done":
                     self.running = False
+                    self.monitoring = False
                     self.start_button.configure(state="normal")
+                    self.monitor_button.configure(state="normal", text="实时监控")
                     self.save_result_button.configure(
                         state="normal" if not self.result.empty else "disabled"
                     )
-                    self.status_var.set(f"完成，共 {len(self.result)} 只")
+                    self.status_var.set(
+                        f"监控已停止，共 {len(self.result)} 只"
+                        if self.monitor_stop.is_set()
+                        else f"完成，共 {len(self.result)} 只"
+                    )
         except queue.Empty:
             pass
         self.after(100, self._poll_messages)
@@ -426,6 +514,183 @@ class ScreenApp(tk.Tk):
         if path:
             self.result.to_csv(path, index=False, encoding="utf-8-sig")
             self.status_var.set(f"结果已保存：{Path(path).name}")
+
+    def _open_similarity(self) -> None:
+        if self.similarity_window is not None and self.similarity_window.winfo_exists():
+            self.similarity_window.lift()
+            return
+
+        window = tk.Toplevel(self)
+        self.similarity_window = window
+        window.title("相似走势分析")
+        window.geometry("1500x720")
+        window.minsize(1050, 560)
+        window.columnconfigure(0, weight=1)
+        window.rowconfigure(1, weight=1)
+
+        controls = ttk.Frame(window, padding=10)
+        controls.grid(row=0, column=0, sticky="ew")
+        ttk.Label(controls, text="股票代码").grid(row=0, column=0, padx=(0, 5))
+        code_var = StringVar()
+        code_entry = ttk.Entry(controls, textvariable=code_var, width=12)
+        code_entry.grid(row=0, column=1, padx=(0, 12))
+        ttk.Label(controls, text="匹配窗口").grid(row=0, column=2, padx=(0, 5))
+        window_var = StringVar(value="全部")
+        ttk.Combobox(
+            controls,
+            textvariable=window_var,
+            values=["全部", "5", "10", "20", "60"],
+            state="readonly",
+            width=8,
+        ).grid(row=0, column=3, padx=(0, 12))
+        ttk.Label(controls, text="每个窗口返回").grid(row=0, column=4, padx=(0, 5))
+        top_n_var = StringVar(value="10")
+        ttk.Entry(controls, textvariable=top_n_var, width=8).grid(
+            row=0, column=5, padx=(0, 12)
+        )
+
+        result_frame = ttk.Frame(window, padding=(10, 0, 10, 10))
+        result_frame.grid(row=1, column=0, sticky="nsew")
+        result_frame.rowconfigure(0, weight=1)
+        result_frame.columnconfigure(0, weight=1)
+        tree = ttk.Treeview(result_frame, show="headings")
+        tree.grid(row=0, column=0, sticky="nsew")
+        tree_y = ttk.Scrollbar(result_frame, orient="vertical", command=tree.yview)
+        tree_y.grid(row=0, column=1, sticky="ns")
+        tree_x = ttk.Scrollbar(result_frame, orient="horizontal", command=tree.xview)
+        tree_x.grid(row=1, column=0, sticky="ew")
+        tree.configure(yscrollcommand=tree_y.set, xscrollcommand=tree_x.set)
+
+        log_frame = ttk.Labelframe(window, text="分析日志", padding=6)
+        log_frame.grid(row=2, column=0, sticky="ew", padx=10, pady=(0, 10))
+        log_frame.columnconfigure(0, weight=1)
+        log_text = tk.Text(log_frame, height=6, wrap="none", state="disabled")
+        log_text.grid(row=0, column=0, sticky="ew")
+        search_button = ttk.Button(controls, text="开始分析")
+        search_button.grid(row=0, column=6, padx=(0, 8))
+        save_button = ttk.Button(controls, text="保存 CSV", state="disabled")
+        save_button.grid(row=0, column=7)
+
+        messages: queue.Queue[tuple[str, object]] = queue.Queue()
+        state = {"running": False, "result": pd.DataFrame()}
+
+        def append_log(message: str) -> None:
+            log_text.configure(state="normal")
+            log_text.insert(END, message + "\n")
+            log_text.see(END)
+            log_text.configure(state="disabled")
+
+        def save_similarity_result() -> None:
+            result = state["result"]
+            if not isinstance(result, pd.DataFrame) or result.empty:
+                return
+            path = filedialog.asksaveasfilename(
+                title="保存相似走势结果",
+                defaultextension=".csv",
+                initialfile=f"similar_{code_var.get().strip()}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+                filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")],
+                parent=window,
+            )
+            if path:
+                result.to_csv(path, index=False, encoding="utf-8-sig")
+                append_log(f"结果已保存：{Path(path).name}")
+
+        def start_search() -> None:
+            if state["running"]:
+                return
+            code = code_var.get().strip()
+            if not code.isdigit() or len(code) > 6:
+                messagebox.showerror("参数错误", "股票代码必须是 6 位数字", parent=window)
+                return
+            try:
+                top_n = int(top_n_var.get().strip())
+                selected_window = window_var.get()
+                windows = (
+                    screen.SIMILAR_WINDOWS
+                    if selected_window == "全部"
+                    else (int(selected_window),)
+                )
+                if top_n < 1:
+                    raise ValueError
+            except ValueError:
+                messagebox.showerror(
+                    "参数错误", "返回数量必须是大于 0 的整数", parent=window
+                )
+                return
+
+            state["running"] = True
+            state["result"] = pd.DataFrame()
+            search_button.configure(state="disabled")
+            save_button.configure(state="disabled")
+            tree.delete(*tree.get_children())
+            append_log("开始分析，请等待历史K线扫描完成...")
+
+            def worker() -> None:
+                try:
+                    result = screen.find_similar_stocks(
+                        code,
+                        windows=windows,
+                        top_n=top_n,
+                        workers=screen.SIMILAR_WORKERS,
+                        log_callback=lambda message: messages.put(("log", message)),
+                    )
+                    messages.put(("result", result))
+                except Exception as exc:  # noqa: BLE001
+                    messages.put(("error", str(exc)))
+                finally:
+                    messages.put(("done", None))
+
+            threading.Thread(target=worker, daemon=True).start()
+
+        def poll_messages() -> None:
+            if not window.winfo_exists():
+                return
+            try:
+                while True:
+                    kind, payload = messages.get_nowait()
+                    if kind == "log":
+                        append_log(str(payload))
+                    elif kind == "result":
+                        result = payload
+                        if isinstance(result, pd.DataFrame):
+                            state["result"] = result
+                            self._show_similarity_result(tree, result)
+                            save_button.configure(
+                                state="normal" if not result.empty else "disabled"
+                            )
+                    elif kind == "error":
+                        append_log(f"分析失败：{payload}")
+                        messagebox.showerror("分析失败", str(payload), parent=window)
+                    elif kind == "done":
+                        state["running"] = False
+                        search_button.configure(state="normal")
+            except queue.Empty:
+                pass
+            window.after(100, poll_messages)
+
+        search_button.configure(command=start_search)
+        save_button.configure(command=save_similarity_result)
+
+        def close_window() -> None:
+            self.similarity_window = None
+            window.destroy()
+
+        window.protocol("WM_DELETE_WINDOW", close_window)
+        code_entry.focus_set()
+        poll_messages()
+
+    def _show_similarity_result(self, tree: ttk.Treeview, result: pd.DataFrame) -> None:
+        tree.delete(*tree.get_children())
+        if result.empty:
+            tree.configure(columns=())
+            return
+        columns = list(result.columns)
+        tree.configure(columns=columns)
+        for column in columns:
+            tree.heading(column, text=column)
+            tree.column(column, width=max(90, min(180, len(column) * 16)))
+        for values in result.itertuples(index=False, name=None):
+            tree.insert("", END, values=values)
 
 
 if __name__ == "__main__":

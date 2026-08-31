@@ -9,12 +9,13 @@ import csv
 from dataclasses import asdict, dataclass
 from functools import lru_cache
 import json
+import math
 from pathlib import Path
 import sys
 import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from datetime import datetime
+from datetime import datetime, timedelta
 from io import StringIO
 from typing import Any, Callable
 
@@ -33,6 +34,10 @@ LIMIT_UP_LOOKBACK = 20
 VOLUME_STAIR_DAYS = 5
 ABOVE_VWAP_RATIO = 1.0  # 9:35 后全部分时收盘价都在均价线上方
 SKIP_OPEN_MINUTES = 5
+RAPID_RISE_WINDOW = 5
+RAPID_RISE_PCT = 2.0
+RAPID_VOLUME_MULTIPLE = 1.5
+MONITOR_INTERVAL = 60
 MAX_MA5_BIAS = 0.07  # 股价远离5日线不进：相对 MA5 偏离上限
 NEAR_20D_HIGH = 0.97  # 上方无套牢压力：收盘不低于近20日高点的 97%
 PLATFORM_LOOKBACK = 15  # 未跌破近15日平台低点
@@ -46,6 +51,7 @@ EASTMONEY_TREND_HOSTS = (
     "https://push2delay.eastmoney.com/api/qt/stock/trends2/get",
     "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
 )
+TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 SESSION = requests.Session()
 SESSION.headers.update(
@@ -62,6 +68,11 @@ LAST_REQUEST_AT = 0.0
 CACHE_DIR = Path.cwd() / ".stock_cache"
 HOT_BOARD_CACHE_TTL = 30 * 60
 KLINE_CACHE_TTL = 24 * 60 * 60
+SIMILAR_WINDOWS = (5, 10, 20, 60)
+SIMILAR_HISTORY_LIMIT = 240
+SIMILAR_FORWARD_DAYS = (1, 3, 5, 10)
+SIMILAR_TOP_N = 10
+SIMILAR_WORKERS = 12
 
 
 @dataclass
@@ -98,6 +109,11 @@ class ScreenConfig:
     skip_open_minutes: int = SKIP_OPEN_MINUTES
     enable_stronger_than_index: bool = True
     enable_tail_high: bool = True
+    enable_rapid_rise: bool = True
+    rapid_rise_window: int = RAPID_RISE_WINDOW
+    rapid_rise_pct: float = RAPID_RISE_PCT
+    rapid_volume_multiple: float = RAPID_VOLUME_MULTIPLE
+    monitor_interval: int = MONITOR_INTERVAL
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -374,6 +390,48 @@ def _parse_trends(trends: list[str]) -> pd.DataFrame:
     return pd.DataFrame(rows)
 
 
+def _fetch_tencent_kline(code: str, limit: int) -> pd.DataFrame:
+    market = "sh" if code.startswith(("6", "9")) else "sz"
+    start = (datetime.now() - timedelta(days=max(120, limit * 2))).strftime("%Y-%m-%d")
+    params = {"param": f"{market}{code},day,{start},,{limit},qfq"}
+    payload = get_json(TENCENT_KLINE_URL, params)
+    data = payload.get("data") or {}
+    stock = data.get(f"{market}{code}") or {}
+    klines = stock.get("qfqday") or stock.get("day") or []
+    rows = []
+    previous_close: float | None = None
+    for values in klines:
+        if len(values) < 6:
+            continue
+        try:
+            close = float(values[2])
+            high = float(values[3])
+            low = float(values[4])
+            if close <= 0:
+                continue
+            pct = (
+                (close / previous_close - 1) * 100
+                if previous_close and previous_close > 0
+                else 0.0
+            )
+            rows.append(
+                {
+                    "日期": values[0],
+                    "开盘": float(values[1]),
+                    "收盘": close,
+                    "最高": high,
+                    "最低": low,
+                    "成交量": float(values[5]),
+                    "成交额": 0.0,
+                    "涨跌幅": pct,
+                }
+            )
+            previous_close = close
+        except (TypeError, ValueError):
+            continue
+    return pd.DataFrame(rows).tail(limit).reset_index(drop=True)
+
+
 @lru_cache(maxsize=512)
 def fetch_kline(code: str, limit: int = 80, secid: str | None = None) -> pd.DataFrame:
     identity = (secid or code).replace(".", "_")
@@ -383,39 +441,348 @@ def fetch_kline(code: str, limit: int = 80, secid: str | None = None) -> pd.Data
         cached_df = pd.DataFrame(cached)
         required = {"收盘", "最高", "最低", "成交量", "涨跌幅"}
         if not cached_df.empty and required.issubset(cached_df.columns):
-            return cached_df
+            return cached_df.tail(limit).reset_index(drop=True)
 
-    params = {
-        "secid": secid or to_secid(code),
-        "klt": "101",
-        "fqt": "1",
-        "beg": "0",
-        "lmt": str(limit),
-        "end": "20500101",
-        "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
-        "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
-    }
-    klines = (get_json_hosts(EASTMONEY_KLINE_HOSTS, params).get("data") or {}).get("klines") or []
-    rows = []
-    for item in klines:
-        values = item.split(",")
-        if len(values) < 11:
-            continue
-        rows.append(
-            {
-                "日期": values[0],
-                "开盘": float(values[1]),
-                "收盘": float(values[2]),
-                "最高": float(values[3]),
-                "最低": float(values[4]),
-                "成交量": float(values[5]),
-                "成交额": float(values[6]),
-                "涨跌幅": float(values[8]),
-            }
-        )
-    result = pd.DataFrame(rows)
+    try:
+        result = _fetch_tencent_kline(code, limit)
+    except Exception:
+        result = pd.DataFrame()
+    if result.empty:
+        params = {
+            "secid": secid or to_secid(code),
+            "klt": "101",
+            "fqt": "1",
+            "beg": "0",
+            "lmt": str(limit),
+            "end": "20500101",
+            "fields1": "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
+            "fields2": "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61",
+        }
+        klines = (
+            get_json_hosts(EASTMONEY_KLINE_HOSTS, params).get("data") or {}
+        ).get("klines") or []
+        rows = []
+        for item in klines:
+            values = item.split(",")
+            if len(values) < 11:
+                continue
+            rows.append(
+                {
+                    "日期": values[0],
+                    "开盘": float(values[1]),
+                    "收盘": float(values[2]),
+                    "最高": float(values[3]),
+                    "最低": float(values[4]),
+                    "成交量": float(values[5]),
+                    "成交额": float(values[6]),
+                    "涨跌幅": float(values[8]),
+                }
+            )
+        result = pd.DataFrame(rows)
     if not result.empty:
         _save_disk_cache(cache_key, result.to_dict("records"))
+    return result
+
+
+def _zscore(values: pd.Series) -> pd.Series:
+    values = pd.to_numeric(values, errors="coerce").fillna(0.0)
+    std = float(values.std(ddof=0))
+    if std <= 1e-12:
+        return pd.Series(0.0, index=values.index)
+    return (values - float(values.mean())) / std
+
+
+def _similarity_score(target: pd.DataFrame, candidate: pd.DataFrame) -> float:
+    target_close = target["收盘"].astype(float).reset_index(drop=True)
+    candidate_close = candidate["收盘"].astype(float).reset_index(drop=True)
+    target_base = float(target_close.iloc[0])
+    candidate_base = float(candidate_close.iloc[0])
+    if target_base <= 0 or candidate_base <= 0:
+        return 0.0
+
+    target_path = target_close / target_base
+    candidate_path = candidate_close / candidate_base
+    price_rmse = float(((target_path - candidate_path) ** 2).mean() ** 0.5)
+    price_similarity = math.exp(-8.0 * price_rmse)
+
+    target_returns = target_close.pct_change().fillna(0.0)
+    candidate_returns = candidate_close.pct_change().fillna(0.0)
+    return_rmse = float(((target_returns - candidate_returns) ** 2).mean() ** 0.5)
+    return_similarity = math.exp(-12.0 * return_rmse)
+
+    target_volume = _zscore(target["成交量"].astype(float).apply(lambda value: math.log1p(max(value, 0.0))))
+    candidate_volume = _zscore(
+        candidate["成交量"].astype(float).apply(lambda value: math.log1p(max(value, 0.0)))
+    )
+    volume_rmse = float(((target_volume - candidate_volume) ** 2).mean() ** 0.5)
+    volume_similarity = math.exp(-0.35 * volume_rmse)
+
+    target_range = _zscore(
+        ((target["最高"] - target["最低"]) / target["收盘"].replace(0, math.nan))
+        .fillna(0.0)
+        .astype(float)
+    )
+    candidate_range = _zscore(
+        ((candidate["最高"] - candidate["最低"]) / candidate["收盘"].replace(0, math.nan))
+        .fillna(0.0)
+        .astype(float)
+    )
+    range_rmse = float(((target_range - candidate_range) ** 2).mean() ** 0.5)
+    range_similarity = math.exp(-0.35 * range_rmse)
+    score = 100 * (
+        0.60 * price_similarity
+        + 0.25 * return_similarity
+        + 0.10 * volume_similarity
+        + 0.05 * range_similarity
+    )
+    return round(max(0.0, min(100.0, score)), 2)
+
+
+def _pattern_label(hist: pd.DataFrame, code: str, name: str) -> str:
+    if hist.empty or len(hist) < 2:
+        return "数据不足"
+    close = hist["收盘"].astype(float)
+    first = float(close.iloc[0])
+    middle = float(close.iloc[len(close) // 2])
+    last = float(close.iloc[-1])
+    if first <= 0 or middle <= 0:
+        return "数据不足"
+    limit_up = limit_up_threshold(code, name)
+    if "涨跌幅" in hist.columns and bool((hist["涨跌幅"] >= limit_up).any()):
+        return "涨停"
+    first_return = middle / first - 1
+    second_return = last / middle - 1
+    total_return = last / first - 1
+    if first_return <= -0.03 and second_return >= 0.03:
+        return "反弹"
+    if total_return >= 0.05 and second_return > 0:
+        return "上涨"
+    if total_return <= -0.05:
+        return "下跌"
+    return "震荡"
+
+
+def _forward_returns(hist: pd.DataFrame, end: int) -> dict[int, float | None]:
+    base = float(hist["收盘"].iloc[end])
+    if base <= 0:
+        return {days: None for days in SIMILAR_FORWARD_DAYS}
+    result: dict[int, float | None] = {}
+    for days in SIMILAR_FORWARD_DAYS:
+        future_index = end + days
+        if future_index >= len(hist):
+            result[days] = None
+        else:
+            result[days] = round(
+                (float(hist["收盘"].iloc[future_index]) / base - 1) * 100, 2
+            )
+    return result
+
+
+def _future_direction(forward: dict[int, float | None]) -> str:
+    values = [value for value in forward.values() if value is not None]
+    if not values:
+        return "无后续数据"
+    positive_ratio = sum(value > 0 for value in values) / len(values)
+    average = sum(values) / len(values)
+    if positive_ratio >= 0.75 and average >= 2:
+        return "偏上涨"
+    if positive_ratio <= 0.25 and average <= -2:
+        return "偏下跌"
+    return "震荡"
+
+
+def _similarity_windows(value: int | str | tuple[int, ...] | None) -> tuple[int, ...]:
+    if isinstance(value, tuple):
+        windows = tuple(int(item) for item in value)
+        if windows and all(window in SIMILAR_WINDOWS for window in windows):
+            return windows
+        raise ValueError("相似走势窗口必须是 5、10、20 或 60")
+    if value is None or str(value).strip() in {"", "全部"}:
+        return SIMILAR_WINDOWS
+    try:
+        window = int(value)
+    except (TypeError, ValueError) as exc:
+        raise ValueError("相似走势窗口必须是 5、10、20 或 60") from exc
+    if window not in SIMILAR_WINDOWS:
+        raise ValueError("相似走势窗口必须是 5、10、20 或 60")
+    return (window,)
+
+
+def _best_similarity_matches(
+    target_hist: pd.DataFrame,
+    candidate_hist: pd.DataFrame,
+    target_code: str,
+    candidate_code: str,
+    candidate_name: str,
+    windows: tuple[int, ...],
+) -> list[dict[str, Any]]:
+    matches: list[dict[str, Any]] = []
+    for window in windows:
+        target = target_hist.tail(window).reset_index(drop=True)
+        target_label = _pattern_label(target, target_code, "")
+        if len(target_hist) < window:
+            continue
+        if len(candidate_hist) < window + max(SIMILAR_FORWARD_DAYS) + 1:
+            continue
+        last_end = len(candidate_hist) - max(SIMILAR_FORWARD_DAYS) - 1
+        best: dict[str, Any] | None = None
+        for end in range(window - 1, last_end + 1):
+            start = end - window + 1
+            segment = candidate_hist.iloc[start : end + 1].reset_index(drop=True)
+            score = _similarity_score(target, segment)
+            if best is None or score > best["相似度"]:
+                forward = _forward_returns(candidate_hist, end)
+                best = {
+                    "窗口": f"{window}日",
+                    "代码": candidate_code,
+                    "名称": candidate_name,
+                    "相似度": score,
+                    "匹配区间": (
+                        f"{candidate_hist['日期'].iloc[start]} 至 "
+                        f"{candidate_hist['日期'].iloc[end]}"
+                    ),
+                    "当前形态": target_label,
+                    "历史形态": _pattern_label(
+                        segment, candidate_code, candidate_name
+                    ),
+                    "后1日涨跌%": forward[1],
+                    "后3日涨跌%": forward[3],
+                    "后5日涨跌%": forward[5],
+                    "后10日涨跌%": forward[10],
+                    "历史后续方向": _future_direction(forward),
+                }
+        if best is not None:
+            matches.append(best)
+    return matches
+
+
+def find_similar_stocks(
+    code: str,
+    windows: tuple[int, ...] = SIMILAR_WINDOWS,
+    top_n: int = SIMILAR_TOP_N,
+    workers: int = 4,
+    log_callback: Callable[[str], None] = log,
+) -> pd.DataFrame:
+    """查找全 A 股中与目标股票近期走势最相似的历史片段。"""
+    code = str(code).strip().zfill(6)
+    if not code.isdigit() or len(code) != 6:
+        raise ValueError("股票代码必须是 6 位数字")
+    windows = _similarity_windows(windows)
+    if top_n < 1:
+        raise ValueError("返回数量必须大于 0")
+
+    target_hist = fetch_kline(code, limit=SIMILAR_HISTORY_LIMIT)
+    required = {"日期", "收盘", "最高", "最低", "成交量", "涨跌幅"}
+    if target_hist.empty or not required.issubset(target_hist.columns):
+        raise RuntimeError(f"{code} 历史 K 线数据不完整")
+    usable_windows = tuple(window for window in windows if len(target_hist) >= window)
+    if not usable_windows:
+        raise RuntimeError(f"{code} 历史 K 线不足 {min(windows)} 个交易日")
+
+    spot = fetch_spot()
+    if spot.empty:
+        raise RuntimeError("未取到股票列表")
+    candidates = spot.copy()
+    candidates["名称"] = candidates["名称"].fillna("").astype(str)
+    candidates = candidates[
+        (candidates["代码"] != code)
+        & ~candidates["名称"].str.contains("ST|退", regex=True, case=False)
+        & (pd.to_numeric(candidates["最新价"], errors="coerce") > 0)
+    ][["代码", "名称"]].drop_duplicates("代码")
+    if candidates.empty:
+        raise RuntimeError("没有可搜索的股票")
+
+    log_callback(
+        f"目标 {code} 当前形态："
+        + "、".join(
+            f"{window}日 {_pattern_label(target_hist.tail(window), code, '')}"
+            for window in usable_windows
+        )
+    )
+    log_callback(f"开始扫描全A股历史日K，共 {len(candidates)} 只...")
+
+    top_matches: dict[int, list[dict[str, Any]]] = {
+        window: [] for window in usable_windows
+    }
+    completed = 0
+    available = 0
+    failed = 0
+    rows = list(candidates.itertuples(index=False, name=None))
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        futures = {
+            pool.submit(fetch_kline, candidate_code, SIMILAR_HISTORY_LIMIT): (
+                candidate_code,
+                candidate_name,
+            )
+            for candidate_code, candidate_name in rows
+        }
+        for future in as_completed(futures):
+            candidate_code, candidate_name = futures[future]
+            completed += 1
+            try:
+                hist = future.result()
+                if not hist.empty and required.issubset(hist.columns):
+                    candidate_matches = _best_similarity_matches(
+                        target_hist,
+                        hist,
+                        code,
+                        candidate_code,
+                        candidate_name,
+                        usable_windows,
+                    )
+                    if candidate_matches:
+                        available += 1
+                    for match in candidate_matches:
+                        window = int(match["窗口"].removesuffix("日"))
+                        top_matches[window].append(match)
+                        top_matches[window].sort(
+                            key=lambda item: item["相似度"], reverse=True
+                        )
+                        del top_matches[window][top_n:]
+                else:
+                    failed += 1
+            except Exception:  # noqa: BLE001
+                failed += 1
+            if completed % 100 == 0 or completed == len(rows):
+                log_callback(
+                    f"历史K线进度 {completed}/{len(rows)}，已比较 {available}，失败 {failed}"
+                )
+
+    matches = [
+        match
+        for window in usable_windows
+        for match in top_matches[window]
+    ]
+
+    result = pd.DataFrame(matches)
+    if result.empty:
+        log_callback("没有找到足够历史数据的相似股票。")
+        return result
+    result = (
+        result.sort_values(["窗口", "相似度"], ascending=[True, False])
+        .groupby("窗口", sort=False, group_keys=False)
+        .head(top_n)
+        .reset_index(drop=True)
+    )
+    for window in usable_windows:
+        mask = result["窗口"] == f"{window}日"
+        count = int(mask.sum())
+        summary_parts = []
+        for days in SIMILAR_FORWARD_DAYS:
+            values = pd.to_numeric(
+                result.loc[mask, f"后{days}日涨跌%"], errors="coerce"
+            ).dropna()
+            if values.empty:
+                continue
+            average = float(values.mean())
+            positive_ratio = float((values > 0).mean() * 100)
+            summary_parts.append(
+                f"{days}日均值 {average:+.2f}%/上涨{positive_ratio:.0f}%"
+            )
+        result.loc[mask, "匹配样本后续统计"] = "；".join(summary_parts) or "无后续数据"
+        if summary_parts:
+            log_callback(f"{window}日匹配样本后续统计：" + "；".join(summary_parts))
+        log_callback(f"{window}日窗口返回 {count} 条相似结果")
     return result
 
 
@@ -534,6 +901,39 @@ def is_above_vwap(trends: pd.DataFrame, config: ScreenConfig) -> bool:
     return now_above and ratio >= ABOVE_VWAP_RATIO
 
 
+def rapid_rise_metrics(
+    trends: pd.DataFrame, config: ScreenConfig
+) -> dict[str, Any] | None:
+    if trends.empty or len(trends) <= config.skip_open_minutes + config.rapid_rise_window:
+        return None
+    body = trends.iloc[config.skip_open_minutes:].reset_index(drop=True)
+    close = pd.to_numeric(body["收盘"], errors="coerce")
+    volume = pd.to_numeric(body["成交量"], errors="coerce").fillna(0).clip(lower=0)
+    window = config.rapid_rise_window
+    best: dict[str, Any] | None = None
+    for end in range(window, len(body)):
+        start = end - window
+        start_close = float(close.iloc[start])
+        end_close = float(close.iloc[end])
+        if start_close <= 0 or end_close <= 0:
+            continue
+        outside = pd.concat([volume.iloc[:start], volume.iloc[end + 1 :]])
+        baseline = float(outside[outside > 0].median())
+        if not math.isfinite(baseline) or baseline <= 0:
+            baseline = float(volume[volume > 0].median())
+        segment_volume = float(volume.iloc[start + 1 : end + 1].mean())
+        multiple = segment_volume / baseline if baseline > 0 else 0.0
+        item = {
+            "涨幅%": (end_close / start_close - 1) * 100,
+            "放量倍数": multiple,
+            "开始时间": str(body["时间"].iloc[start]),
+            "结束时间": str(body["时间"].iloc[end]),
+        }
+        if best is None or item["涨幅%"] > best["涨幅%"]:
+            best = item
+    return best
+
+
 def is_stronger_than_index(stock_pct: float, index_pct: float) -> bool:
     return stock_pct > index_pct
 
@@ -589,7 +989,7 @@ def inspect_one(
         hist = fetch_kline(code, limit=80) if needs_hist else pd.DataFrame()
         trends = (
             fetch_trends(code)
-            if config.enable_vwap or config.enable_tail_high
+            if config.enable_vwap or config.enable_tail_high or config.enable_rapid_rise
             else pd.DataFrame()
         )
     except Exception as exc:  # noqa: BLE001
@@ -619,6 +1019,21 @@ def inspect_one(
         return None
     if config.enable_near_high and not near_20d_high(hist, config):
         log_callback(f"   排除 {code} {name}：上方仍有套牢压力")
+        return None
+    rapid = rapid_rise_metrics(trends, config) if config.enable_rapid_rise else None
+    if config.enable_rapid_rise and (
+        rapid is None
+        or rapid["涨幅%"] < config.rapid_rise_pct
+        or rapid["放量倍数"] < config.rapid_volume_multiple
+    ):
+        if rapid is None:
+            detail = "数据不足"
+        else:
+            detail = (
+                f"最大{config.rapid_rise_window}分钟涨幅 "
+                f"{rapid['涨幅%']:.2f}% / 放量 {rapid['放量倍数']:.2f}倍"
+            )
+        log_callback(f"   排除 {code} {name}：未满足急速拉升（{detail}）")
         return None
     if config.enable_vwap and not is_above_vwap(trends, config):
         log_callback(f"   排除 {code} {name}：分时未全程在均价线上方")
@@ -661,6 +1076,11 @@ def inspect_one(
         "MA60": round(ma60_value, 3) if ma60_value is not None else None,
         "偏离MA5%": round(ma5_bias, 2) if ma5_bias is not None else None,
         "距均价%": round(vwap_bias, 2),
+        "急拉涨幅%": round(float(rapid["涨幅%"]), 2) if rapid else None,
+        "急拉放量倍数": round(float(rapid["放量倍数"]), 2) if rapid else None,
+        "急拉时段": (
+            f"{rapid['开始时间']}至{rapid['结束时间']}" if rapid else ""
+        ),
         "近5日量": "-".join(str(int(v)) for v in vols),
         "最新价": round(price, 3),
     }
@@ -753,14 +1173,51 @@ def run_screen(
 
 
 def main() -> int:
-    parser = argparse.ArgumentParser(description="14:30 后 A 股条件选股")
+    parser = argparse.ArgumentParser(description="A 股条件选股与分时异动监控")
     parser.add_argument("--hot-n", type=int, default=HOT_BOARD_TOP_N, help="热点概念板块取前 N 个")
     parser.add_argument("--workers", type=int, default=2, help="个股复检并发数")
     parser.add_argument("--out", default="", help="结果 CSV 路径，默认按日期生成")
+    parser.add_argument("--similar-code", default="", help="查找相似走势的股票代码")
+    parser.add_argument(
+        "--similar-window",
+        choices=["全部", "5", "10", "20", "60"],
+        default="全部",
+        help="相似走势匹配窗口",
+    )
+    parser.add_argument(
+        "--similar-top-n", type=int, default=SIMILAR_TOP_N, help="每个窗口返回数量"
+    )
+    parser.add_argument(
+        "--similar-workers",
+        type=int,
+        default=SIMILAR_WORKERS,
+        help="相似走势历史K线并发请求数",
+    )
     args = parser.parse_args()
 
     if hasattr(sys.stdout, "reconfigure"):
         sys.stdout.reconfigure(encoding="utf-8")
+
+    if args.similar_code:
+        try:
+            out_df = find_similar_stocks(
+                args.similar_code,
+                windows=_similarity_windows(args.similar_window),
+                top_n=args.similar_top_n,
+                workers=args.similar_workers,
+            )
+        except Exception as exc:  # noqa: BLE001
+            log(f"相似走势分析失败：{exc}")
+            return 1
+        if not out_df.empty:
+            log(out_df.to_string(index=False))
+            out_path = args.out or (
+                f"similar_{str(args.similar_code).zfill(6)}_"
+                f"{datetime.now().strftime('%Y%m%d')}.csv"
+            )
+            save_csv(out_df.to_dict("records"), out_path)
+            log(f"已保存 {out_path}")
+        return 0
 
     warn_if_before_1430()
     config = ScreenConfig(hot_board_top_n=args.hot_n)
