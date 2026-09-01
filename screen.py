@@ -38,6 +38,7 @@ SKIP_OPEN_MINUTES = 5
 RAPID_RISE_WINDOW = 5
 RAPID_RISE_PCT = 2.0
 RAPID_VOLUME_MULTIPLE = 1.5
+LHB_COUNT_MIN = 10
 MONITOR_INTERVAL = 60
 MAX_MA5_BIAS = 0.07  # 股价远离5日线不进：相对 MA5 偏离上限
 NEAR_20D_HIGH = 0.97  # 上方无套牢压力：收盘不低于近20日高点的 97%
@@ -52,6 +53,7 @@ EASTMONEY_TREND_HOSTS = (
     "https://push2delay.eastmoney.com/api/qt/stock/trends2/get",
     "https://push2his.eastmoney.com/api/qt/stock/trends2/get",
 )
+EASTMONEY_DATACENTER_URL = "https://datacenter-web.eastmoney.com/api/data/v1/get"
 TENCENT_KLINE_URL = "https://web.ifzq.gtimg.cn/appstock/app/fqkline/get"
 
 SESSION = requests.Session()
@@ -96,6 +98,8 @@ class ScreenConfig:
     enable_main_inflow: bool = True
     enable_hot_board: bool = True
     hot_board_top_n: int = HOT_BOARD_TOP_N
+    enable_lhb_count: bool = True
+    lhb_count_min: int = LHB_COUNT_MIN
     enable_limit_up_gene: bool = True
     limit_up_lookback: int = LIMIT_UP_LOOKBACK
     enable_volume_stair: bool = True
@@ -354,6 +358,32 @@ def fetch_hot_concepts(top_n: int) -> tuple[pd.DataFrame, set[str], dict[str, li
         },
     )
     return boards, hot_codes, member_map
+
+
+def fetch_lhb_counts() -> dict[str, int]:
+    params = {
+        "sortColumns": "BILLBOARD_TIMES,LATEST_TDATE,SECURITY_CODE",
+        "sortTypes": "-1,-1,1",
+        "pageSize": "5000",
+        "pageNumber": "1",
+        "reportName": "RPT_BILLBOARD_TRADEALL",
+        "columns": "ALL",
+        "source": "WEB",
+        "client": "WEB",
+        "filter": '(STATISTICS_CYCLE="04")',
+    }
+    payload = get_json(EASTMONEY_DATACENTER_URL, params)
+    rows = ((payload.get("result") or {}).get("data") or [])
+    counts: dict[str, int] = {}
+    for item in rows:
+        code = str(item.get("SECURITY_CODE") or "").zfill(6)
+        if not code or code == "000000":
+            continue
+        try:
+            counts[code] = int(float(item.get("BILLBOARD_TIMES") or 0))
+        except (TypeError, ValueError):
+            counts[code] = 0
+    return counts
 
 
 def fetch_index_pct() -> tuple[float, pd.DataFrame]:
@@ -1118,6 +1148,7 @@ def inspect_one(
         "流通市值_亿": round(float(row["流通市值_亿"]), 2),
         "市盈率": round(float(row["市盈率"]), 2),
         "主力净流入_亿": inflow_yi,
+        "近一年龙虎榜次数": int(row.get("近一年龙虎榜次数", 0)),
         "热点板块": "、".join(row.get("热点板块") or []),
         "MA5": round(ma5_value, 3) if ma5_value is not None else None,
         "MA10": round(ma10_value, 3) if ma10_value is not None else None,
@@ -1209,7 +1240,24 @@ def run_screen(
 
     if stop_event and stop_event.is_set():
         return pd.DataFrame()
-    log_callback("4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时...")
+    if config.enable_lhb_count:
+        log_callback("4/5 查询近一年龙虎榜上榜次数...")
+        lhb_counts = fetch_lhb_counts()
+        hot["近一年龙虎榜次数"] = hot["代码"].map(lhb_counts).fillna(0).astype(int)
+        hot = hot[hot["近一年龙虎榜次数"] > config.lhb_count_min].copy()
+        log_callback(
+            f"   龙虎榜次数 > {config.lhb_count_min} 次剩余 {len(hot)} 只"
+        )
+        if hot.empty:
+            log_callback("没有满足近一年龙虎榜次数条件的候选。")
+            return pd.DataFrame()
+    else:
+        hot["近一年龙虎榜次数"] = 0
+        log_callback("4/5 已关闭近一年龙虎榜次数筛选")
+
+    if stop_event and stop_event.is_set():
+        return pd.DataFrame()
+    log_callback("5/5 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时...")
     picked: list[dict[str, Any]] = []
     rows = [r for _, r in hot.iterrows()]
     pool = ThreadPoolExecutor(max_workers=max(1, workers))

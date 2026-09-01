@@ -4,7 +4,8 @@ const API = {
     "https://push2his.eastmoney.com/api/qt/stock/kline/get",
     "https://push2delay.eastmoney.com/api/qt/stock/kline/get"
   ],
-  trend: "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
+  trend: "https://push2delay.eastmoney.com/api/qt/stock/trends2/get",
+  dataCenter: "https://datacenter-web.eastmoney.com/api/data/v1/get"
 };
 const MONITOR_INFLOW_MIN = 10000000;
 
@@ -232,6 +233,27 @@ async function fetchIndexPct(tokenValue) {
   if (!preClose || !rows.length) return 0;
   const last = number(rows[rows.length - 1].split(",")[2]);
   return last ? (last / preClose - 1) * 100 : 0;
+}
+
+async function fetchLhbCounts(tokenValue) {
+  const data = await getJson(API.dataCenter, {
+    sortColumns: "BILLBOARD_TIMES,LATEST_TDATE,SECURITY_CODE",
+    sortTypes: "-1,-1,1",
+    pageSize: 5000,
+    pageNumber: 1,
+    reportName: "RPT_BILLBOARD_TRADEALL",
+    columns: "ALL",
+    source: "WEB",
+    client: "WEB",
+    filter: '(STATISTICS_CYCLE="04")'
+  }, tokenValue);
+  const rows = data?.result?.data || [];
+  const counts = new Map();
+  rows.forEach((row) => {
+    const code = String(row.SECURITY_CODE || "").padStart(6, "0");
+    if (code !== "000000") counts.set(code, number(row.BILLBOARD_TIMES));
+  });
+  return counts;
 }
 
 async function fetchHotBoards(tokenValue, topN) {
@@ -499,6 +521,7 @@ async function analyzeStock(row, options, tokenValue) {
     流通市值_亿: row.floatMarketValue.toFixed(2),
     市盈率: row.pe.toFixed(2),
     主力净流入_亿: (row.mainInflow / 1e8).toFixed(3),
+    近一年龙虎榜次数: row.lhbCount ?? "",
     热点板块: boards.join("、"),
     急拉涨幅: rapid ? rapid.pct.toFixed(2) : "",
     急拉放量: rapid ? rapid.volumeMultiple.toFixed(2) : "",
@@ -535,6 +558,7 @@ async function runScreen(live, tokenValue, update) {
   const monitorOptions = live ? {
     ...options,
     enableHotBoard: false,
+    enableLhbCount: false,
     enableLimitUp: false,
     enableVolumeStair: false,
     enableMaBullish: false,
@@ -598,10 +622,27 @@ async function runScreen(live, tokenValue, update) {
     logMessage("3/4 已关闭强于大盘筛选");
   }
 
+  if (!live && options.enableLhbCount) {
+    logMessage("4/5 查询近一年龙虎榜上榜次数...");
+    const lhbCounts = await fetchLhbCounts(tokenValue);
+    check(tokenValue);
+    candidates = candidates
+      .map((row) => ({ ...row, lhbCount: lhbCounts.get(row.code) || 0 }))
+      .filter((row) => row.lhbCount > options.lhbCountMin);
+    logMessage(`   龙虎榜次数 > ${options.lhbCountMin} 次剩余 ${candidates.length} 只`);
+    if (!candidates.length) {
+      logMessage("没有满足近一年龙虎榜次数条件的候选。");
+      return [];
+    }
+  } else if (!live) {
+    candidates = candidates.map((row) => ({ ...row, lhbCount: 0 }));
+    logMessage("4/5 已关闭近一年龙虎榜次数筛选");
+  }
+
   candidates = candidates.sort((a, b) => b.amount - a.amount);
   logMessage(live
     ? `2/2 复检急速拉升... 共 ${candidates.length} 只`
-    : `4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时... 共 ${candidates.length} 只`);
+    : `5/5 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时... 共 ${candidates.length} 只`);
   const results = await mapLimit(
     candidates,
     4,
@@ -792,7 +833,9 @@ function readOptions() {
     rapidPct: Math.max(0, value("rapidPct") || 0),
     rapidVolume: Math.max(0, value("rapidVolume") || 0),
     monitorInterval: Math.max(15, value("monitorInterval") || 15),
-    enableNotify: checked("enableNotify")
+    enableNotify: checked("enableNotify"),
+    enableLhbCount: checked("enableLhbCount"),
+    lhbCountMin: Math.max(0, value("lhbCountMin") || 0)
   };
   if (options.pctMin > options.pctMax) throw new Error("涨幅最小值不能大于最大值");
   if (options.turnoverMin > options.turnoverMax) throw new Error("换手率最小值不能大于最大值");

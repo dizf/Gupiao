@@ -73,6 +73,11 @@
             <label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label>
             <label>实时刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label>
         </div>
+        <label class="check"><input id="enableLhbCount" type="checkbox" checked>近一年龙虎榜次数大于</label>
+        <div class="grid">
+            <label>上榜次数<input id="lhbCountMin" type="number" value="10" min="0"></label>
+            <label>统计周期<input type="text" value="近一年" readonly></label>
+        </div>
         <label class="check"><input id="enableLimitUp" type="checkbox" checked>近 N 日有涨停</label>
         <div class="grid">
             <label>交易日<input id="limitUpLookback" type="number" value="20" min="1"></label>

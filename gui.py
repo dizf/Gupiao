@@ -150,6 +150,9 @@ class ScreenApp(tk.Tk):
             parent, row, "enable_hot_board", "热点板块筛选", "hot_board_top_n", "前 N 个板块"
         )
         row = self._check_value_row(
+            parent, row, "enable_lhb_count", "近一年龙虎榜次数大于", "lhb_count_min", "次"
+        )
+        row = self._check_value_row(
             parent, row, "enable_limit_up_gene", "近 N 日有涨停", "limit_up_lookback", "交易日"
         )
         row = self._check_value_row(
@@ -305,6 +308,8 @@ class ScreenApp(tk.Tk):
             enable_main_inflow=self.bool_vars["enable_main_inflow"].get(),
             enable_hot_board=self.bool_vars["enable_hot_board"].get(),
             hot_board_top_n=self._read_int("hot_board_top_n", "热点板块数量"),
+            enable_lhb_count=self.bool_vars["enable_lhb_count"].get(),
+            lhb_count_min=self._read_int("lhb_count_min", "近一年龙虎榜次数"),
             enable_limit_up_gene=self.bool_vars["enable_limit_up_gene"].get(),
             limit_up_lookback=self._read_int("limit_up_lookback", "涨停回看天数"),
             enable_volume_stair=self.bool_vars["enable_volume_stair"].get(),
@@ -336,6 +341,8 @@ class ScreenApp(tk.Tk):
             raise ValueError("量比最小值不能大于最大值")
         if config.hot_board_top_n < 1 or config.limit_up_lookback < 1:
             raise ValueError("板块数量和涨停回看天数必须大于 0")
+        if config.lhb_count_min < 0:
+            raise ValueError("近一年龙虎榜次数不能为负数")
         if config.volume_stair_days < 2 or config.platform_lookback < 1:
             raise ValueError("放量天数至少为 2，平台回看天数必须大于 0")
         if not 0 < config.above_vwap_ratio <= 1:
