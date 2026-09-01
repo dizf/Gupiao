@@ -1,5 +1,8 @@
 package org.gupiao.selector;
 
+import android.Manifest;
+import android.content.pm.PackageManager;
+import android.os.Build;
 import android.os.Bundle;
 import android.webkit.WebSettings;
 import android.webkit.WebView;
@@ -27,6 +30,12 @@ public class MainActivity extends AppCompatActivity {
 
         marketBridge = new MarketBridge(this, webView);
         webView.addJavascriptInterface(marketBridge, "MarketAPI");
+        if (Build.VERSION.SDK_INT >= 33 &&
+                checkSelfPermission(Manifest.permission.POST_NOTIFICATIONS)
+                        != PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(
+                    new String[]{Manifest.permission.POST_NOTIFICATIONS}, 1001);
+        }
         webView.loadUrl("file:///android_asset/index.html");
     }
 

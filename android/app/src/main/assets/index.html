@@ -71,7 +71,7 @@
         <label class="check"><input id="enableHotBoard" type="checkbox" checked>热点板块筛选</label>
         <div class="grid">
             <label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label>
-            <label>实时刷新秒数<input id="monitorInterval" type="number" value="60" min="1"></label>
+            <label>实时刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label>
         </div>
         <label class="check"><input id="enableLimitUp" type="checkbox" checked>近 N 日有涨停</label>
         <div class="grid">
@@ -107,6 +107,8 @@
             <button id="screenButton">开始选股</button>
             <button id="monitorButton" class="secondary">实时监控</button>
         </div>
+        <label class="check"><input id="enableNotify" type="checkbox" checked>命中实时监控条件时发出提醒铃声</label>
+        <div class="hint">实时监控：基础条件 + 主力净流入 ≥ 1000 万 + 急速拉升，默认每 15 秒刷新。</div>
     </section>
     <section>
         <h2>相似走势分析</h2>

@@ -6,6 +6,7 @@ const API = {
   ],
   trend: "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
 };
+const MONITOR_INFLOW_MIN = 10000000;
 
 const state = {
   pending: new Map(),
@@ -19,7 +20,8 @@ const state = {
   hotCodes: null,
   hotMemberMap: null,
   hotCodesAt: 0,
-  hotTopN: 10
+  hotTopN: 10,
+  monitorAlertCodes: new Set()
 };
 
 window.__marketResolve = (id, success, body) => {
@@ -530,14 +532,33 @@ async function mapLimit(rows, limit, callback, tokenValue, success) {
 
 async function runScreen(live, tokenValue, update) {
   const options = readOptions();
-  logMessage(`1/4 拉取行情，过滤基础条件...`);
+  const monitorOptions = live ? {
+    ...options,
+    enableHotBoard: false,
+    enableLimitUp: false,
+    enableVolumeStair: false,
+    enableMaBullish: false,
+    enableMa5Bias: false,
+    enablePlatform: false,
+    enableNearHigh: false,
+    enableVwap: false,
+    enableStrongerThanIndex: false,
+    enableTailHigh: false,
+    enableRapidRise: true
+  } : options;
+  logMessage(live
+    ? "1/2 拉取行情，过滤基础条件和主力大幅流入..."
+    : "1/4 拉取行情，过滤基础条件...");
   const spot = await fetchSpot(tokenValue);
   check(tokenValue);
   logMessage(`   行情 ${spot.length} 只`);
-  let candidates = filterBasic(spot, options);
+  let candidates = filterBasic(spot, monitorOptions);
   logMessage(`   基础条件剩余 ${candidates.length} 只`);
 
-  if (options.enableHotBoard) {
+  if (live) {
+    candidates = candidates.filter((row) => row.mainInflow >= MONITOR_INFLOW_MIN);
+    logMessage(`   主力净流入 ≥ 1000 万剩余 ${candidates.length} 只`);
+  } else if (options.enableHotBoard) {
     logMessage(`2/4 取涨幅前 ${options.hotBoardTopN} 的热点板块...`);
     const hot = await fetchHotBoards(tokenValue, options.hotBoardTopN);
     check(tokenValue);
@@ -556,11 +577,13 @@ async function runScreen(live, tokenValue, update) {
   }
 
   if (!candidates.length) {
-    logMessage("没有符合当前基础条件的股票。");
+    logMessage(live
+      ? "没有符合实时监控条件的股票。"
+      : "没有符合当前基础条件的股票。");
     return [];
   }
 
-  if (options.enableStrongerThanIndex) {
+  if (!live && options.enableStrongerThanIndex) {
     logMessage("3/4 拉取上证指数，用于比较分时强弱...");
     const indexPct = await fetchIndexPct(tokenValue);
     check(tokenValue);
@@ -571,19 +594,26 @@ async function runScreen(live, tokenValue, update) {
       logMessage("没有强于大盘的候选。");
       return [];
     }
-  } else {
+  } else if (!live) {
     logMessage("3/4 已关闭强于大盘筛选");
   }
 
   candidates = candidates.sort((a, b) => b.amount - a.amount);
-  logMessage(`4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时... 共 ${candidates.length} 只`);
+  logMessage(live
+    ? `2/2 复检急速拉升... 共 ${candidates.length} 只`
+    : `4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时... 共 ${candidates.length} 只`);
   const results = await mapLimit(
     candidates,
     4,
-    (row) => analyzeStock(row, options, tokenValue),
+    (row) => analyzeStock(row, monitorOptions, tokenValue),
     tokenValue,
     (value) => {
       logMessage(`   命中 ${value.代码} ${value.名称}`);
+      if (live && options.enableNotify && !state.monitorAlertCodes.has(value.代码)) {
+        notifyMatch(value);
+        state.monitorAlertCodes.add(value.代码);
+        logMessage(`   已发送提醒 ${value.代码} ${value.名称}`);
+      }
       update(value);
       state.screenRows.push(value);
       renderResults(state.screenRows.slice().sort((a, b) => Number(b.涨跌幅) - Number(a.涨跌幅)));
@@ -761,7 +791,8 @@ function readOptions() {
     rapidWindow: Math.max(1, value("rapidWindow") || 1),
     rapidPct: Math.max(0, value("rapidPct") || 0),
     rapidVolume: Math.max(0, value("rapidVolume") || 0),
-    monitorInterval: Math.max(1, value("monitorInterval") || 1)
+    monitorInterval: Math.max(15, value("monitorInterval") || 15),
+    enableNotify: checked("enableNotify")
   };
   if (options.pctMin > options.pctMax) throw new Error("涨幅最小值不能大于最大值");
   if (options.turnoverMin > options.turnoverMax) throw new Error("换手率最小值不能大于最大值");
@@ -839,6 +870,12 @@ function setStatus(message) {
   document.querySelector("#status").textContent = message;
 }
 
+function notifyMatch(row) {
+  if (!window.MarketAPI?.notifyMatch) return;
+  const text = `${row.代码} ${row.名称}：主力净流入 ${row.主力净流入_亿} 亿，急拉 ${row.急拉涨幅}%`;
+  window.MarketAPI.notifyMatch("实时监控命中", text);
+}
+
 async function startScreen() {
   if (state.screen) {
     stopToken(state.screen);
@@ -877,15 +914,22 @@ async function toggleMonitor() {
   }
   state.monitor = token();
   state.screenRows = [];
+  state.monitorAlertCodes = new Set();
   clearLog();
   document.querySelector("#monitorButton").textContent = "停止监控";
   setStatus("正在实时监控...");
   try {
     while (!state.monitor.stopped) {
       logMessage(`---- 监控刷新 ${new Date().toLocaleTimeString()} ----`);
+      state.screenRows = [];
+      renderResults([]);
       const result = await runScreen(true, state.monitor, () => {});
       state.screenRows = result;
       renderResults(result);
+      const currentCodes = new Set(result.map((row) => row.代码));
+      state.monitorAlertCodes = new Set(
+        [...state.monitorAlertCodes].filter((code) => currentCodes.has(code))
+      );
       setStatus(`实时监控中：当前 ${result.length} 只`);
       await new Promise((resolve) => setTimeout(resolve, readOptions().monitorInterval * 1000));
     }
