@@ -12,14 +12,20 @@
         h2 { margin: 0 0 10px; font-size: 17px; }
         section { background: white; border-radius: 12px; padding: 12px; margin-bottom: 12px; box-shadow: 0 1px 5px #d9deea; }
         .grid { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+        .check { display: flex; align-items: center; gap: 8px; font-size: 13px; color: #334155; margin: 4px 0; }
+        .check input { width: 16px; height: 16px; }
         label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: #5d6678; }
         input, select, button { font: inherit; border: 1px solid #ccd3df; border-radius: 7px; padding: 9px; background: white; }
         button { border: 0; color: white; background: #2563eb; font-weight: 600; }
         button.secondary { background: #64748b; }
-        button.stop { background: #dc2626; }
         .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 10px; }
-        #status { font-size: 13px; color: #2563eb; min-height: 18px; }
-        #log { max-height: 130px; overflow: auto; white-space: pre-wrap; color: #667085; font-size: 11px; }
+        #status { font-size: 13px; color: #2563eb; min-height: 18px; margin-bottom: 6px; }
+        #log {
+            max-height: 180px; overflow: auto; white-space: pre-wrap;
+            color: #334155; font-size: 12px; line-height: 1.45;
+            background: #f8fafc; border: 1px solid #e6eaf0; border-radius: 8px; padding: 8px;
+            min-height: 72px;
+        }
         #results { overflow-x: auto; font-size: 11px; }
         table { border-collapse: collapse; width: 100%; min-width: 620px; }
         th, td { border-bottom: 1px solid #e6eaf0; padding: 6px; text-align: left; white-space: nowrap; }
@@ -30,18 +36,66 @@
 <body>
     <h1>A股选股与异动监控</h1>
     <section>
-        <h2>选股参数</h2>
+        <h2>基础条件</h2>
+        <label class="check"><input id="enablePct" type="checkbox" checked>涨幅 (%)</label>
         <div class="grid">
-            <label>涨幅最小值 %<input id="pctMin" type="number" value="3" step="0.1"></label>
-            <label>涨幅最大值 %<input id="pctMax" type="number" value="5" step="0.1"></label>
-            <label>换手率最小值 %<input id="turnoverMin" type="number" value="5" step="0.1"></label>
-            <label>换手率最大值 %<input id="turnoverMax" type="number" value="10" step="0.1"></label>
-            <label>量比最小值<input id="volumeRatioMin" type="number" value="1.5" step="0.1"></label>
+            <label>最小值<input id="pctMin" type="number" value="3" step="0.1"></label>
+            <label>最大值<input id="pctMax" type="number" value="5" step="0.1"></label>
+        </div>
+        <label class="check"><input id="enableTurnover" type="checkbox" checked>换手率 (%)</label>
+        <div class="grid">
+            <label>最小值<input id="turnoverMin" type="number" value="5" step="0.1"></label>
+            <label>最大值<input id="turnoverMax" type="number" value="10" step="0.1"></label>
+        </div>
+        <label class="check"><input id="enableVolumeRatio" type="checkbox" checked>量比</label>
+        <div class="grid">
+            <label>最小值<input id="volumeRatioMin" type="number" value="1.5" step="0.1"></label>
+            <label>最大值（可空）<input id="volumeRatioMax" type="number" step="0.1" placeholder="留空"></label>
+        </div>
+        <label class="check"><input id="enableCircMv" type="checkbox" checked>流通市值 (亿)</label>
+        <div class="grid">
+            <label>最小值<input id="circMvMin" type="number" value="50" step="1"></label>
+            <label>最大值<input id="circMvMax" type="number" value="200" step="1"></label>
+        </div>
+        <label class="check"><input id="enableProfitable" type="checkbox" checked>盈利企业（动态市盈率 &gt; 0）</label>
+        <label class="check"><input id="enableMainInflow" type="checkbox" checked>主力净流入 &gt; 0</label>
+    </section>
+    <section>
+        <h2>技术条件</h2>
+        <label class="check"><input id="enableHotBoard" type="checkbox" checked>热点板块筛选</label>
+        <div class="grid">
+            <label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label>
             <label>实时刷新秒数<input id="monitorInterval" type="number" value="60" min="1"></label>
+        </div>
+        <label class="check"><input id="enableLimitUp" type="checkbox" checked>近 N 日有涨停</label>
+        <div class="grid">
+            <label>交易日<input id="limitUpLookback" type="number" value="20" min="1"></label>
+            <label>放量交易日<input id="volumeStairDays" type="number" value="5" min="2"></label>
+        </div>
+        <label class="check"><input id="enableVolumeStair" type="checkbox" checked>台阶式持续放量</label>
+        <label class="check"><input id="enableMaBullish" type="checkbox" checked>5/10/20/60 日均线多头向上</label>
+        <label class="check"><input id="enableMa5Bias" type="checkbox" checked>不远离 5 日均线</label>
+        <div class="grid">
+            <label>最大偏离 %<input id="maxMa5Bias" type="number" value="7" step="0.1"></label>
+            <label>平台回看交易日<input id="platformLookback" type="number" value="15" min="1"></label>
+        </div>
+        <label class="check"><input id="enablePlatform" type="checkbox" checked>未跌破平台支撑</label>
+        <label class="check"><input id="enableNearHigh" type="checkbox" checked>接近近 20 日高点</label>
+        <div class="grid">
+            <label>高点下限 %<input id="near20dHigh" type="number" value="97" step="0.1"></label>
+            <label>跳过开盘分时<input id="skipOpenMinutes" type="number" value="5" min="0"></label>
+        </div>
+        <label class="check"><input id="enableVwap" type="checkbox" checked>分时运行在均价线上方</label>
+        <div class="grid">
+            <label>水上比例 %<input id="aboveVwapRatio" type="number" value="100" step="1" min="1" max="100"></label>
             <label>急拉分钟窗口<input id="rapidWindow" type="number" value="5" min="1"></label>
+        </div>
+        <label class="check"><input id="enableStrongerThanIndex" type="checkbox" checked>走势强于上证指数</label>
+        <label class="check"><input id="enableTailHigh" type="checkbox" checked>14:30 后创当日新高</label>
+        <label class="check"><input id="enableRapidRise" type="checkbox" checked>分时急速拉升</label>
+        <div class="grid">
             <label>急拉最小涨幅 %<input id="rapidPct" type="number" value="2" step="0.1"></label>
             <label>急拉最小放量<input id="rapidVolume" type="number" value="1.5" step="0.1"></label>
-            <label>选股候选数量<input id="screenLimit" type="number" value="300" min="1"></label>
         </div>
         <div class="actions">
             <button id="screenButton">开始选股</button>
@@ -65,8 +119,9 @@
         <div class="hint">相似结果会在每只候选完成后实时更新，分析过程中可停止。</div>
     </section>
     <section>
+        <h2>运行日志</h2>
         <div id="status">就绪</div>
-        <div id="log"></div>
+        <div id="log">等待开始...</div>
     </section>
     <section>
         <h2>结果</h2>

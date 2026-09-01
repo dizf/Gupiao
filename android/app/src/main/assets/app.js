@@ -14,7 +14,9 @@ const state = {
   similarRows: [],
   exportRows: [],
   hotCodes: null,
-  hotCodesAt: 0
+  hotMemberMap: null,
+  hotCodesAt: 0,
+  hotTopN: 10
 };
 
 window.__marketResolve = (id, success, body) => {
@@ -26,7 +28,12 @@ window.__marketResolve = (id, success, body) => {
     try {
       request.resolve(JSON.parse(body));
     } catch (_) {
-      request.reject(new Error("行情接口返回格式错误"));
+      // saveFile 返回普通路径字符串，不是 JSON
+      if (typeof body === "string" && body && !/^\s*[\[{]/.test(body)) {
+        request.resolve(body);
+      } else {
+        request.reject(new Error("行情接口返回格式错误"));
+      }
     }
   } else {
     request.reject(new Error(body || "网络请求失败"));
@@ -74,6 +81,17 @@ function getJson(url, params, tokenValue) {
 function number(value) {
   const result = Number(value);
   return Number.isFinite(result) ? result : 0;
+}
+
+function optionalNumber(id) {
+  const text = String(document.querySelector(`#${id}`).value || "").trim();
+  if (!text) return null;
+  const result = Number(text);
+  return Number.isFinite(result) ? result : null;
+}
+
+function checked(id) {
+  return Boolean(document.querySelector(`#${id}`)?.checked);
 }
 
 function secid(code) {
@@ -193,9 +211,13 @@ async function fetchIndexPct(tokenValue) {
   return last ? (last / preClose - 1) * 100 : 0;
 }
 
-async function fetchHotCodes(tokenValue, topN = 10) {
-  if (state.hotCodes && Date.now() - state.hotCodesAt < 30 * 60 * 1000) {
-    return state.hotCodes;
+async function fetchHotBoards(tokenValue, topN) {
+  if (
+    state.hotCodes &&
+    state.hotTopN === topN &&
+    Date.now() - state.hotCodesAt < 30 * 60 * 1000
+  ) {
+    return { codes: state.hotCodes, memberMap: state.hotMemberMap, boards: [] };
   }
   const fields = "f12,f14,f3";
   const skipWords = /昨日|涨停|连板|打板|打二板|历史新高|跌停|炸板|题材股/;
@@ -206,16 +228,29 @@ async function fetchHotCodes(tokenValue, topN = 10) {
       .filter((row) => !skipWords.test(String(row.f14 || "")))
       .sort((a, b) => number(b.f3) - number(a.f3))
       .slice(0, topN)
-      .map((row) => ({ code: String(row.f12), name: String(row.f14 || ""), type })));
+      .map((row) => ({
+        code: String(row.f12),
+        name: String(row.f14 || ""),
+        pct: number(row.f3),
+        type
+      })));
   }
   const codes = new Set();
+  const memberMap = {};
   for (const board of boards) {
     const members = await fetchClist(`b:${board.code}+f:!50`, "f12,f14", tokenValue);
-    members.forEach((row) => codes.add(String(row.f12 || "").padStart(6, "0")));
+    members.forEach((row) => {
+      const code = String(row.f12 || "").padStart(6, "0");
+      codes.add(code);
+      if (!memberMap[code]) memberMap[code] = [];
+      memberMap[code].push(board.name);
+    });
   }
   state.hotCodes = codes;
+  state.hotMemberMap = memberMap;
   state.hotCodesAt = Date.now();
-  return codes;
+  state.hotTopN = topN;
+  return { codes, memberMap, boards };
 }
 
 function median(values) {
@@ -226,7 +261,7 @@ function median(values) {
 }
 
 function rapidMetrics(rows, options) {
-  const startAt = options.skipOpen;
+  const startAt = options.skipOpenMinutes;
   const window = options.rapidWindow;
   if (!rows || rows.length <= startAt + window) return null;
   const body = rows.slice(startAt);
@@ -239,7 +274,9 @@ function rapidMetrics(rows, options) {
     const segment = body.slice(start + 1, end + 1);
     const outside = body.slice(0, start).concat(body.slice(end + 1)).map((row) => row.volume);
     const baseline = median(outside) || median(body.map((row) => row.volume));
-    const volumeMultiple = baseline ? segment.reduce((sum, row) => sum + row.volume, 0) / segment.length / baseline : 0;
+    const volumeMultiple = baseline
+      ? segment.reduce((sum, row) => sum + row.volume, 0) / segment.length / baseline
+      : 0;
     const item = {
       pct: (close / base - 1) * 100,
       volumeMultiple,
@@ -251,24 +288,86 @@ function rapidMetrics(rows, options) {
   return best;
 }
 
-function movingAverage(rows, size) {
-  return rows.slice(-size).reduce((sum, row) => sum + row.close, 0) / size;
+function maSeries(rows) {
+  if (rows.length < 62) return null;
+  const closes = rows.map((row) => row.close);
+  const avg = (end, size) => {
+    let sum = 0;
+    for (let i = end - size + 1; i <= end; i += 1) sum += closes[i];
+    return sum / size;
+  };
+  const last = closes.length - 1;
+  const prev = last - 1;
+  return {
+    ma5: avg(last, 5),
+    ma10: avg(last, 10),
+    ma20: avg(last, 20),
+    ma60: avg(last, 60),
+    prevMa5: avg(prev, 5),
+    prevMa10: avg(prev, 10),
+    prevMa20: avg(prev, 20),
+    prevMa60: avg(prev, 60),
+    close: closes[last]
+  };
 }
 
-function isLimitUp(code, name, rows) {
-  const threshold = /ST|退/i.test(name) ? 4.8 : /^(300|301|688)/.test(code) ? 19.5 : /^(8|4)/.test(code) ? 29.5 : 9.5;
-  return rows.slice(-20).some((row) => row.pct >= threshold);
+function limitUpThreshold(code, name) {
+  if (/ST|退/i.test(name)) return 4.8;
+  if (/^(300|301|688)/.test(code)) return 19.5;
+  if (/^[84]/.test(code)) return 29.5;
+  return 9.5;
 }
 
-function isVolumeStair(rows) {
-  const values = rows.slice(-5).map((row) => row.volume);
-  return values.length === 5 && values.every((value, index) => index === 0 || value > values[index - 1]);
+function hasLimitUpGene(code, name, rows, lookback) {
+  const threshold = limitUpThreshold(code, name);
+  return rows.slice(-lookback).some((row) => row.pct >= threshold);
 }
 
-function isAboveVwap(rows) {
-  const body = rows.slice(5);
-  return body.length > 0 && body.every((row) => row.close >= row.vwap) &&
-    body[body.length - 1].close >= body[body.length - 1].vwap;
+function isVolumeStair(rows, days) {
+  const values = rows.slice(-days).map((row) => row.volume);
+  return values.length === days &&
+    values.every((value, index) => index === 0 || value > values[index - 1]);
+}
+
+function isMaBullish(rows) {
+  const mas = maSeries(rows);
+  if (!mas) return false;
+  const stacked = mas.ma5 > mas.ma10 && mas.ma10 > mas.ma20 && mas.ma20 > mas.ma60;
+  const above = mas.close > mas.ma5;
+  const sloping =
+    mas.ma5 > mas.prevMa5 &&
+    mas.ma10 > mas.prevMa10 &&
+    mas.ma20 > mas.prevMa20 &&
+    mas.ma60 > mas.prevMa60;
+  return stacked && above && sloping;
+}
+
+function notFarFromMa5(rows, price, maxBias) {
+  const mas = maSeries(rows);
+  if (!mas || mas.ma5 <= 0 || price < mas.ma5) return false;
+  return (price - mas.ma5) / mas.ma5 <= maxBias;
+}
+
+function heldPlatform(rows, lookback) {
+  if (rows.length < lookback + 1) return false;
+  const support = Math.min(...rows.slice(-(lookback + 1), -1).map((row) => row.low));
+  return rows[rows.length - 1].low >= support;
+}
+
+function near20dHigh(rows, ratio) {
+  if (rows.length < 20) return false;
+  const high = Math.max(...rows.slice(-20).map((row) => row.high));
+  const close = rows[rows.length - 1].close;
+  return high > 0 && close >= high * ratio;
+}
+
+function isAboveVwap(rows, options) {
+  if (!rows.length || rows.length <= options.skipOpenMinutes) return false;
+  const body = rows.slice(options.skipOpenMinutes);
+  if (!body.length) return false;
+  const ratio = body.filter((row) => row.close >= row.vwap).length / body.length;
+  const nowAbove = rows[rows.length - 1].close >= rows[rows.length - 1].vwap;
+  return nowAbove && ratio >= options.aboveVwapRatio;
 }
 
 function isTailHigh(rows) {
@@ -278,43 +377,110 @@ function isTailHigh(rows) {
     const time = row.time.slice(11, 16);
     return time >= "14:30";
   });
-  return after.length > 0 && Math.max(...after.map((row) => row.high)) >= high * 0.999 &&
+  return after.length > 0 &&
+    Math.max(...after.map((row) => row.high)) >= high * 0.999 &&
     rows[rows.length - 1].close >= high * 0.992;
 }
 
-function analyzeStock(row, options, tokenValue) {
-  return Promise.all([fetchKline(row.code, tokenValue), fetchTrend(row.code, tokenValue)])
-    .then(([history, trends]) => {
-      check(tokenValue);
-      if (history.length < 62 || trends.length < 6) return null;
-      const ma5 = movingAverage(history, 5);
-      const ma10 = movingAverage(history, 10);
-      const ma20 = movingAverage(history, 20);
-      const ma60 = movingAverage(history, 60);
-      const rapid = rapidMetrics(trends, options);
-      if (!isLimitUp(row.code, row.name, history) ||
-          !isVolumeStair(history) ||
-          !(ma5 > ma10 && ma10 > ma20 && ma20 > ma60 && row.price > ma5) ||
-          (row.price - ma5) / ma5 > 0.07 ||
-          history[history.length - 1].low < Math.min(...history.slice(-16, -1).map((item) => item.low)) ||
-          row.price < Math.max(...history.slice(-20).map((item) => item.high)) * 0.97 ||
-          !rapid ||
-          rapid.pct < options.rapidPct ||
-          rapid.volumeMultiple < options.rapidVolume ||
-          !isAboveVwap(trends) ||
-          (options.tailHigh && !isTailHigh(trends))) return null;
-      return {
-        代码: row.code,
-        名称: row.name,
-        最新价: row.price.toFixed(3),
-        涨跌幅: row.pct.toFixed(2),
-        换手率: row.turnover.toFixed(2),
-        量比: row.volumeRatio.toFixed(2),
-        急拉涨幅: rapid.pct.toFixed(2),
-        急拉放量: rapid.volumeMultiple.toFixed(2),
-        急拉时段: `${rapid.start} 至 ${rapid.end}`
-      };
-    });
+function filterBasic(spot, options) {
+  return spot.filter((row) => {
+    if (options.enablePct && (row.pct < options.pctMin || row.pct > options.pctMax)) return false;
+    if (options.enableTurnover &&
+        (row.turnover < options.turnoverMin || row.turnover > options.turnoverMax)) return false;
+    if (options.enableVolumeRatio) {
+      if (!(row.volumeRatio > options.volumeRatioMin)) return false;
+      if (options.volumeRatioMax != null && row.volumeRatio > options.volumeRatioMax) return false;
+    }
+    if (options.enableCircMv &&
+        (row.floatMarketValue < options.circMvMin || row.floatMarketValue > options.circMvMax)) {
+      return false;
+    }
+    if (options.enableProfitable && !(row.pe > 0)) return false;
+    if (options.enableMainInflow && !(row.mainInflow > 0)) return false;
+    return true;
+  });
+}
+
+async function analyzeStock(row, options, tokenValue) {
+  const needsHist = options.enableLimitUp || options.enableVolumeStair ||
+    options.enableMaBullish || options.enableMa5Bias ||
+    options.enablePlatform || options.enableNearHigh;
+  const needsTrend = options.enableVwap || options.enableTailHigh || options.enableRapidRise;
+  const [history, trends] = await Promise.all([
+    needsHist ? fetchKline(row.code, tokenValue) : Promise.resolve([]),
+    needsTrend ? fetchTrend(row.code, tokenValue) : Promise.resolve([])
+  ]);
+  check(tokenValue);
+
+  if (needsHist && history.length < 62 &&
+      (options.enableMaBullish || options.enableMa5Bias)) {
+    logMessage(`   排除 ${row.code} ${row.name}：历史 K 线不足`);
+    return null;
+  }
+
+  if (options.enableLimitUp &&
+      !hasLimitUpGene(row.code, row.name, history, options.limitUpLookback)) {
+    logMessage(`   排除 ${row.code} ${row.name}：${options.limitUpLookback} 日内无涨停`);
+    return null;
+  }
+  if (options.enableVolumeStair && !isVolumeStair(history, options.volumeStairDays)) {
+    logMessage(`   排除 ${row.code} ${row.name}：量能非台阶式放量`);
+    return null;
+  }
+  if (options.enableMaBullish && !isMaBullish(history)) {
+    logMessage(`   排除 ${row.code} ${row.name}：均线非 5/10/20/60 多头向上`);
+    return null;
+  }
+  if (options.enableMa5Bias && !notFarFromMa5(history, row.price, options.maxMa5Bias)) {
+    logMessage(`   排除 ${row.code} ${row.name}：股价远离5日均线`);
+    return null;
+  }
+  if (options.enablePlatform && !heldPlatform(history, options.platformLookback)) {
+    logMessage(`   排除 ${row.code} ${row.name}：已跌破近期平台支撑`);
+    return null;
+  }
+  if (options.enableNearHigh && !near20dHigh(history, options.near20dHigh)) {
+    logMessage(`   排除 ${row.code} ${row.name}：上方仍有套牢压力`);
+    return null;
+  }
+
+  const rapid = options.enableRapidRise ? rapidMetrics(trends, options) : null;
+  if (options.enableRapidRise && (
+    !rapid ||
+    rapid.pct < options.rapidPct ||
+    rapid.volumeMultiple < options.rapidVolume
+  )) {
+    const detail = rapid
+      ? `最大${options.rapidWindow}分钟涨幅 ${rapid.pct.toFixed(2)}% / 放量 ${rapid.volumeMultiple.toFixed(2)}倍`
+      : "数据不足";
+    logMessage(`   排除 ${row.code} ${row.name}：未满足急速拉升（${detail}）`);
+    return null;
+  }
+  if (options.enableVwap && !isAboveVwap(trends, options)) {
+    logMessage(`   排除 ${row.code} ${row.name}：分时未全程在均价线上方`);
+    return null;
+  }
+  if (options.enableTailHigh && !isTailHigh(trends)) {
+    logMessage(`   排除 ${row.code} ${row.name}：14:30 后未创当日新高`);
+    return null;
+  }
+
+  const boards = row.hotBoards || [];
+  return {
+    代码: row.code,
+    名称: row.name,
+    最新价: row.price.toFixed(3),
+    涨跌幅: row.pct.toFixed(2),
+    换手率: row.turnover.toFixed(2),
+    量比: row.volumeRatio.toFixed(2),
+    流通市值_亿: row.floatMarketValue.toFixed(2),
+    市盈率: row.pe.toFixed(2),
+    主力净流入_亿: (row.mainInflow / 1e8).toFixed(3),
+    热点板块: boards.join("、"),
+    急拉涨幅: rapid ? rapid.pct.toFixed(2) : "",
+    急拉放量: rapid ? rapid.volumeMultiple.toFixed(2) : "",
+    急拉时段: rapid ? `${rapid.start} 至 ${rapid.end}` : ""
+  };
 }
 
 async function mapLimit(rows, limit, callback, tokenValue, success) {
@@ -331,51 +497,88 @@ async function mapLimit(rows, limit, callback, tokenValue, success) {
           success?.(value);
         }
       } catch (error) {
-        if (!tokenValue?.stopped) logMessage(`${row.code || ""}：${error.message}`);
+        if (!tokenValue?.stopped) {
+          logMessage(`${row.code || ""}：${error.message}`);
+        }
       }
     }
   }
-  await Promise.all(Array.from({ length: Math.min(limit, rows.length) }, worker));
+  await Promise.all(Array.from({ length: Math.min(limit, rows.length || 1) }, worker));
   return results;
 }
 
 async function runScreen(live, tokenValue, update) {
   const options = readOptions();
-  options.tailHigh = !live && new Date().toTimeString().slice(0, 5) >= "14:30";
+  logMessage(`1/4 拉取行情，过滤基础条件...`);
   const spot = await fetchSpot(tokenValue);
-  let candidates = spot.filter((row) =>
-    row.pct >= options.pctMin &&
-    row.pct <= options.pctMax &&
-    row.turnover >= options.turnoverMin &&
-    row.turnover <= options.turnoverMax &&
-    row.volumeRatio > options.volumeRatioMin &&
-    row.floatMarketValue >= 50 &&
-    row.floatMarketValue <= 200 &&
-    row.pe > 0 &&
-    row.mainInflow > 0
-  ).sort((a, b) => b.amount - a.amount);
-  const hotCodes = await fetchHotCodes(tokenValue);
-  candidates = candidates.filter((row) => hotCodes.has(row.code));
-  const indexPct = await fetchIndexPct(tokenValue);
-  candidates = candidates.filter((row) => row.pct > indexPct).slice(0, options.screenLimit);
-  logMessage(`候选 ${candidates.length} 只，开始复检${live ? "（实时）" : ""}...`);
+  check(tokenValue);
+  logMessage(`   行情 ${spot.length} 只`);
+  let candidates = filterBasic(spot, options);
+  logMessage(`   基础条件剩余 ${candidates.length} 只`);
+
+  if (options.enableHotBoard) {
+    logMessage(`2/4 取涨幅前 ${options.hotBoardTopN} 的热点板块...`);
+    const hot = await fetchHotBoards(tokenValue, options.hotBoardTopN);
+    check(tokenValue);
+    if (hot.boards.length) {
+      hot.boards.slice(0, 8).forEach((board) => {
+        logMessage(`   ${board.type} ${board.name} ${board.pct.toFixed(2)}%`);
+      });
+    }
+    candidates = candidates
+      .map((row) => ({ ...row, hotBoards: hot.memberMap[row.code] || [] }))
+      .filter((row) => hot.codes.has(row.code));
+    logMessage(`   落在热点板块内 ${candidates.length} 只`);
+  } else {
+    logMessage("2/4 已关闭热点板块筛选");
+    candidates = candidates.map((row) => ({ ...row, hotBoards: [] }));
+  }
+
+  if (!candidates.length) {
+    logMessage("没有符合当前基础条件的股票。");
+    return [];
+  }
+
+  if (options.enableStrongerThanIndex) {
+    logMessage("3/4 拉取上证指数，用于比较分时强弱...");
+    const indexPct = await fetchIndexPct(tokenValue);
+    check(tokenValue);
+    logMessage(`   上证涨跌幅 ${indexPct.toFixed(2)}%`);
+    candidates = candidates.filter((row) => row.pct > indexPct);
+    logMessage(`   强于大盘剩余 ${candidates.length} 只`);
+    if (!candidates.length) {
+      logMessage("没有强于大盘的候选。");
+      return [];
+    }
+  } else {
+    logMessage("3/4 已关闭强于大盘筛选");
+  }
+
+  candidates = candidates.sort((a, b) => b.amount - a.amount);
+  logMessage(`4/4 复检涨停基因 / 台阶放量 / 均线 / 平台 / 分时... 共 ${candidates.length} 只`);
   const results = await mapLimit(
     candidates,
     4,
     (row) => analyzeStock(row, options, tokenValue),
     tokenValue,
     (value) => {
+      logMessage(`   命中 ${value.代码} ${value.名称}`);
       update(value);
       state.screenRows.push(value);
-      renderResults(state.screenRows);
+      renderResults(state.screenRows.slice().sort((a, b) => Number(b.涨跌幅) - Number(a.涨跌幅)));
     }
   );
-  return results.sort((a, b) => Number(b.涨跌幅) - Number(a.涨跌幅));
+  const sorted = results.sort((a, b) => Number(b.涨跌幅) - Number(a.涨跌幅));
+  logMessage(`===== 最终结果 ${sorted.length} 只 =====`);
+  if (!sorted.length) logMessage("无符合全部条件的股票。");
+  return sorted;
 }
 
 function zscore(values) {
   const average = values.reduce((sum, value) => sum + value, 0) / values.length;
-  const deviation = Math.sqrt(values.reduce((sum, value) => sum + (value - average) ** 2, 0) / values.length);
+  const deviation = Math.sqrt(
+    values.reduce((sum, value) => sum + (value - average) ** 2, 0) / values.length
+  );
   return deviation ? values.map((value) => (value - average) / deviation) : values.map(() => 0);
 }
 
@@ -385,14 +588,33 @@ function similarityScore(target, candidate) {
   if (!targetBase || !candidateBase) return 0;
   const targetPath = target.map((row) => row.close / targetBase);
   const candidatePath = candidate.map((row) => row.close / candidateBase);
-  const pathError = Math.sqrt(targetPath.reduce((sum, value, i) => sum + (value - candidatePath[i]) ** 2, 0) / target.length);
-  const targetReturns = target.map((row, i) => i ? row.close / target[i - 1].close - 1 : 0);
-  const candidateReturns = candidate.map((row, i) => i ? row.close / candidate[i - 1].close - 1 : 0);
-  const returnError = Math.sqrt(targetReturns.reduce((sum, value, i) => sum + (value - candidateReturns[i]) ** 2, 0) / target.length);
+  const pathError = Math.sqrt(
+    targetPath.reduce((sum, value, i) => sum + (value - candidatePath[i]) ** 2, 0) / target.length
+  );
+  const targetReturns = target.map((row, i) => (i ? row.close / target[i - 1].close - 1 : 0));
+  const candidateReturns = candidate.map((row, i) =>
+    (i ? row.close / candidate[i - 1].close - 1 : 0));
+  const returnError = Math.sqrt(
+    targetReturns.reduce((sum, value, i) => sum + (value - candidateReturns[i]) ** 2, 0) /
+      target.length
+  );
   const targetVolume = zscore(target.map((row) => Math.log1p(row.volume)));
   const candidateVolume = zscore(candidate.map((row) => Math.log1p(row.volume)));
-  const volumeError = Math.sqrt(targetVolume.reduce((sum, value, i) => sum + (value - candidateVolume[i]) ** 2, 0) / target.length);
-  return Math.max(0, Math.min(100, 100 * (0.6 * Math.exp(-8 * pathError) + 0.25 * Math.exp(-12 * returnError) + 0.15 * Math.exp(-0.35 * volumeError))));
+  const volumeError = Math.sqrt(
+    targetVolume.reduce((sum, value, i) => sum + (value - candidateVolume[i]) ** 2, 0) /
+      target.length
+  );
+  return Math.max(
+    0,
+    Math.min(
+      100,
+      100 * (
+        0.6 * Math.exp(-8 * pathError) +
+        0.25 * Math.exp(-12 * returnError) +
+        0.15 * Math.exp(-0.35 * volumeError)
+      )
+    )
+  );
 }
 
 function bestMatches(targetHistory, candidateHistory, code, name, windows) {
@@ -407,7 +629,8 @@ function bestMatches(targetHistory, candidateHistory, code, name, windows) {
       if (!best || score > best.相似度) {
         const base = candidateHistory[end].close;
         const forward = (days) => candidateHistory[end + days]
-          ? (candidateHistory[end + days].close / base - 1) * 100 : null;
+          ? (candidateHistory[end + days].close / base - 1) * 100
+          : null;
         best = {
           窗口: `${window}日`,
           代码: code,
@@ -432,11 +655,18 @@ async function runSimilarity(tokenValue, update) {
   const topN = Number(document.querySelector("#similarTopN").value);
   const selected = document.querySelector("#similarWindow").value;
   if (!/^\d{6}$/.test(code)) throw new Error("股票代码必须是 6 位数字");
-  if (!Number.isInteger(candidateLimit) || candidateLimit < 0 || !Number.isInteger(topN) || topN < 1) {
+  if (!Number.isInteger(candidateLimit) || candidateLimit < 0 ||
+      !Number.isInteger(topN) || topN < 1) {
     throw new Error("候选数量不能为负数，返回数量必须大于 0");
   }
   const windows = selected === "全部" ? [5, 10, 20, 60] : [Number(selected)];
+  clearLog();
+  logMessage(`拉取目标股 ${code} 历史K线...`);
   const target = await fetchKline(code, tokenValue);
+  if (target.length < Math.max(...windows)) {
+    throw new Error("目标股历史数据不足");
+  }
+  logMessage("拉取全市场行情...");
   const spot = await fetchSpot(tokenValue);
   let candidates = spot.sort((a, b) => b.amount - a.amount);
   if (candidateLimit) candidates = candidates.slice(0, candidateLimit);
@@ -457,7 +687,13 @@ async function runSimilarity(tokenValue, update) {
   await mapLimit(
     candidates,
     4,
-    async (row) => bestMatches(target, await fetchKline(row.code, tokenValue), row.code, row.name, windows),
+    async (row) => bestMatches(
+      target,
+      await fetchKline(row.code, tokenValue),
+      row.code,
+      row.name,
+      windows
+    ),
     tokenValue,
     (matches) => addMatches(matches)
   );
@@ -466,24 +702,63 @@ async function runSimilarity(tokenValue, update) {
 
 function readOptions() {
   const value = (id) => Number(document.querySelector(`#${id}`).value);
-  return {
+  const volumeRatioMax = optionalNumber("volumeRatioMax");
+  const options = {
+    enablePct: checked("enablePct"),
     pctMin: value("pctMin"),
     pctMax: value("pctMax"),
+    enableTurnover: checked("enableTurnover"),
     turnoverMin: value("turnoverMin"),
     turnoverMax: value("turnoverMax"),
+    enableVolumeRatio: checked("enableVolumeRatio"),
     volumeRatioMin: value("volumeRatioMin"),
-    monitorInterval: Math.max(1, value("monitorInterval")),
-    rapidWindow: Math.max(1, value("rapidWindow")),
-    rapidPct: Math.max(0, value("rapidPct")),
-    rapidVolume: Math.max(0, value("rapidVolume")),
-    screenLimit: Math.max(1, value("screenLimit")),
-    skipOpen: 5
+    volumeRatioMax,
+    enableCircMv: checked("enableCircMv"),
+    circMvMin: value("circMvMin"),
+    circMvMax: value("circMvMax"),
+    enableProfitable: checked("enableProfitable"),
+    enableMainInflow: checked("enableMainInflow"),
+    enableHotBoard: checked("enableHotBoard"),
+    hotBoardTopN: Math.max(1, value("hotBoardTopN") || 1),
+    enableLimitUp: checked("enableLimitUp"),
+    limitUpLookback: Math.max(1, value("limitUpLookback") || 1),
+    enableVolumeStair: checked("enableVolumeStair"),
+    volumeStairDays: Math.max(2, value("volumeStairDays") || 2),
+    enableMaBullish: checked("enableMaBullish"),
+    enableMa5Bias: checked("enableMa5Bias"),
+    maxMa5Bias: Math.max(0, value("maxMa5Bias") || 0) / 100,
+    enablePlatform: checked("enablePlatform"),
+    platformLookback: Math.max(1, value("platformLookback") || 1),
+    enableNearHigh: checked("enableNearHigh"),
+    near20dHigh: Math.max(0.01, Math.min(1, (value("near20dHigh") || 97) / 100)),
+    enableVwap: checked("enableVwap"),
+    aboveVwapRatio: Math.max(0.01, Math.min(1, (value("aboveVwapRatio") || 100) / 100)),
+    skipOpenMinutes: Math.max(0, value("skipOpenMinutes") || 0),
+    enableStrongerThanIndex: checked("enableStrongerThanIndex"),
+    enableTailHigh: checked("enableTailHigh"),
+    enableRapidRise: checked("enableRapidRise"),
+    rapidWindow: Math.max(1, value("rapidWindow") || 1),
+    rapidPct: Math.max(0, value("rapidPct") || 0),
+    rapidVolume: Math.max(0, value("rapidVolume") || 0),
+    monitorInterval: Math.max(1, value("monitorInterval") || 1)
   };
+  if (options.pctMin > options.pctMax) throw new Error("涨幅最小值不能大于最大值");
+  if (options.turnoverMin > options.turnoverMax) throw new Error("换手率最小值不能大于最大值");
+  if (options.volumeRatioMax != null && options.volumeRatioMin > options.volumeRatioMax) {
+    throw new Error("量比最小值不能大于最大值");
+  }
+  if (options.circMvMin > options.circMvMax) throw new Error("流通市值最小值不能大于最大值");
+  return options;
+}
+
+function clearLog() {
+  document.querySelector("#log").textContent = "";
 }
 
 function logMessage(message) {
   const log = document.querySelector("#log");
-  log.textContent = `${log.textContent.split("\n").filter(Boolean).slice(-11).join("\n")}\n${message}`.trim();
+  const lines = `${log.textContent}\n${message}`.split("\n").filter(Boolean).slice(-80);
+  log.textContent = lines.join("\n");
   log.scrollTop = log.scrollHeight;
 }
 
@@ -496,7 +771,9 @@ function renderResults(rows) {
   }
   const columns = Object.keys(rows[0]);
   const head = columns.map((column) => `<th>${escapeHtml(column)}</th>`).join("");
-  const body = rows.map((row) => `<tr>${columns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`).join("");
+  const body = rows.map((row) =>
+    `<tr>${columns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`
+  ).join("");
   container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
 }
 
@@ -550,14 +827,21 @@ async function startScreen() {
   try {
     state.screen = token();
     state.screenRows = [];
+    clearLog();
     renderResults([]);
     document.querySelector("#screenButton").textContent = "停止选股";
     setStatus("正在选股...");
     const result = await runScreen(false, state.screen, () => {});
     state.screenRows = result;
     renderResults(result);
+    if (!state.screen.stopped) {
+      setStatus(`选股完成：${result.length} 只`);
+    }
   } catch (error) {
-    if (!state.screen?.stopped) setStatus(`选股失败：${error.message}`);
+    if (!state.screen?.stopped) {
+      logMessage(`选股失败：${error.message}`);
+      setStatus(`选股失败：${error.message}`);
+    }
   } finally {
     state.screen = null;
     document.querySelector("#screenButton").textContent = "开始选股";
@@ -572,17 +856,23 @@ async function toggleMonitor() {
   }
   state.monitor = token();
   state.screenRows = [];
+  clearLog();
   document.querySelector("#monitorButton").textContent = "停止监控";
   setStatus("正在实时监控...");
   try {
     while (!state.monitor.stopped) {
+      logMessage(`---- 监控刷新 ${new Date().toLocaleTimeString()} ----`);
       const result = await runScreen(true, state.monitor, () => {});
       state.screenRows = result;
       renderResults(result);
+      setStatus(`实时监控中：当前 ${result.length} 只`);
       await new Promise((resolve) => setTimeout(resolve, readOptions().monitorInterval * 1000));
     }
   } catch (error) {
-    if (!state.monitor.stopped) setStatus(`监控失败：${error.message}`);
+    if (!state.monitor.stopped) {
+      logMessage(`监控失败：${error.message}`);
+      setStatus(`监控失败：${error.message}`);
+    }
   } finally {
     state.monitor = null;
     document.querySelector("#monitorButton").textContent = "实时监控";
@@ -604,12 +894,18 @@ async function startSimilarity() {
     const result = await runSimilarity(state.similar, () => {});
     state.similarRows = result;
     renderResults(result);
+    if (!state.similar.stopped) {
+      setStatus(`相似分析完成：${result.length} 条`);
+      logMessage(`相似分析完成：${result.length} 条`);
+    }
   } catch (error) {
-    if (!state.similar?.stopped) setStatus(`相似分析失败：${error.message}`);
+    if (!state.similar?.stopped) {
+      logMessage(`相似分析失败：${error.message}`);
+      setStatus(`相似分析失败：${error.message}`);
+    }
   } finally {
     state.similar = null;
     document.querySelector("#similarButton").textContent = "开始分析";
-    setStatus("相似分析已停止/完成");
   }
 }
 
