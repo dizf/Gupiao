@@ -1,6 +1,9 @@
 const API = {
   clist: "https://push2delay.eastmoney.com/api/qt/clist/get",
-  kline: "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+  kline: [
+    "https://push2his.eastmoney.com/api/qt/stock/kline/get",
+    "https://push2delay.eastmoney.com/api/qt/stock/kline/get"
+  ],
   trend: "https://push2delay.eastmoney.com/api/qt/stock/trends2/get"
 };
 
@@ -148,7 +151,7 @@ async function fetchSpot(tokenValue) {
 }
 
 async function fetchKline(code, tokenValue) {
-  const data = await getJson(API.kline, {
+  const params = {
     secid: secid(code),
     klt: 101,
     fqt: 1,
@@ -157,7 +160,25 @@ async function fetchKline(code, tokenValue) {
     end: 20500101,
     fields1: "f1,f2,f3,f4,f5,f6,f7,f8,f9,f10,f11,f12,f13",
     fields2: "f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61"
-  }, tokenValue);
+  };
+  let data = null;
+  let lastError = null;
+  for (const url of API.kline) {
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        data = await getJson(url, params, tokenValue);
+        break;
+      } catch (error) {
+        lastError = error;
+        check(tokenValue);
+        if (attempt === 0) {
+          await new Promise((resolve) => setTimeout(resolve, 250));
+        }
+      }
+    }
+    if (data) break;
+  }
+  if (!data) throw lastError || new Error("历史 K 线获取失败");
   return (data?.data?.klines || []).map((item) => {
     const values = item.split(",");
     return {

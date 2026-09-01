@@ -10,19 +10,24 @@ import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
 import java.nio.charset.StandardCharsets;
+import java.util.Collections;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
 
 import okhttp3.Call;
 import okhttp3.OkHttpClient;
+import okhttp3.Protocol;
 import okhttp3.Request;
 import okhttp3.Response;
 
 public class MarketBridge {
     private final Context context;
     private final WebView webView;
-    private final OkHttpClient client = new OkHttpClient();
+    private final OkHttpClient client = new OkHttpClient.Builder()
+            .retryOnConnectionFailure(true)
+            .protocols(Collections.singletonList(Protocol.HTTP_1_1))
+            .build();
     private final ExecutorService executor = Executors.newFixedThreadPool(4);
     private final ConcurrentHashMap<String, Call> calls = new ConcurrentHashMap<>();
 
