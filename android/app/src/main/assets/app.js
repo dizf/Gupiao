@@ -869,7 +869,24 @@ function renderResults(rows) {
   const body = rows.map((row) =>
     `<tr>${columns.map((column) => `<td>${escapeHtml(row[column])}</td>`).join("")}</tr>`
   ).join("");
-  container.innerHTML = `<table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table>`;
+  const cards = rows.map((row) => {
+    const title = row.代码 && row.名称
+      ? `${row.代码} ${row.名称}`
+      : row.名称 || row.代码 || "分析结果";
+    const fields = columns.map((column) =>
+      `<div class="result-field">
+        <span class="result-field-label">${escapeHtml(column)}</span>
+        <span class="result-field-value">${escapeHtml(row[column])}</span>
+      </div>`
+    ).join("");
+    return `<article class="result-card">
+      <div class="result-card-title">${escapeHtml(title)}</div>
+      <div class="result-fields">${fields}</div>
+    </article>`;
+  }).join("");
+  container.innerHTML = `
+    <div class="result-cards">${cards}</div>
+    <div class="results-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>`;
 }
 
 function escapeHtml(value) {

@@ -27,7 +27,18 @@
             background: #f8fafc; border: 1px solid #e6eaf0; border-radius: 9px; padding: 9px;
             min-height: 72px;
         }
-        #results { overflow-x: auto; font-size: 11px; }
+        #results { font-size: 11px; }
+        .result-cards { display: grid; gap: 10px; }
+        .result-card { border: 1px solid #dbe4f0; border-radius: 10px; padding: 10px; background: #fbfdff; }
+        .result-card-title { color: #1e3a8a; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
+        .result-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 7px 10px; }
+        .result-field { min-width: 0; }
+        .result-field-label { display: block; color: #64748b; font-size: 10px; margin-bottom: 2px; }
+        .result-field-value { display: block; color: #172033; font-size: 12px; overflow-wrap: anywhere; }
+        .results-scroll { overflow-x: auto; -webkit-overflow-scrolling: touch; padding-bottom: 8px; }
+        .results-scroll::-webkit-scrollbar { height: 8px; }
+        .results-scroll::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 8px; }
+        .results-scroll::-webkit-scrollbar-track { background: #e2e8f0; border-radius: 8px; }
         table { border-collapse: collapse; width: 100%; min-width: 620px; }
         th, td { border-bottom: 1px solid #e6eaf0; padding: 6px; text-align: left; white-space: nowrap; }
         th { background: #eef3ff; color: #334155; position: sticky; top: 0; }
@@ -36,6 +47,12 @@
             body { padding-left: 10px; padding-right: 10px; }
             section { padding: 12px; }
             .grid { gap: 7px; }
+        }
+        @media (min-width: 700px) {
+            .result-cards { display: none; }
+        }
+        @media (max-width: 699px) {
+            .results-scroll { display: none; }
         }
     </style>
 </head>
@@ -73,30 +90,30 @@
             <label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label>
             <label>实时刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label>
         </div>
-        <label class="check"><input id="enableLhbCount" type="checkbox" checked>近一年龙虎榜次数大于</label>
+        <label class="check"><input id="enableLhbCount" type="checkbox">近一年龙虎榜次数大于</label>
         <div class="grid">
             <label>上榜次数<input id="lhbCountMin" type="number" value="10" min="0"></label>
             <label>统计周期<input type="text" value="近一年" readonly></label>
         </div>
-        <label class="check"><input id="enableLimitUp" type="checkbox" checked>近 N 日有涨停</label>
+        <label class="check"><input id="enableLimitUp" type="checkbox">近 N 日有涨停</label>
         <div class="grid">
             <label>交易日<input id="limitUpLookback" type="number" value="20" min="1"></label>
             <label>放量交易日<input id="volumeStairDays" type="number" value="5" min="2"></label>
         </div>
-        <label class="check"><input id="enableVolumeStair" type="checkbox" checked>台阶式持续放量</label>
-        <label class="check"><input id="enableMaBullish" type="checkbox" checked>5/10/20/60 日均线多头向上</label>
-        <label class="check"><input id="enableMa5Bias" type="checkbox" checked>不远离 5 日均线</label>
+        <label class="check"><input id="enableVolumeStair" type="checkbox">台阶式持续放量</label>
+        <label class="check"><input id="enableMaBullish" type="checkbox">5/10/20/60 日均线多头向上</label>
+        <label class="check"><input id="enableMa5Bias" type="checkbox">不远离 5 日均线</label>
         <div class="grid">
             <label>最大偏离 %<input id="maxMa5Bias" type="number" value="7" step="0.1"></label>
             <label>平台回看交易日<input id="platformLookback" type="number" value="15" min="1"></label>
         </div>
-        <label class="check"><input id="enablePlatform" type="checkbox" checked>未跌破平台支撑</label>
-        <label class="check"><input id="enableNearHigh" type="checkbox" checked>接近近 20 日高点</label>
+        <label class="check"><input id="enablePlatform" type="checkbox">未跌破平台支撑</label>
+        <label class="check"><input id="enableNearHigh" type="checkbox">接近近 20 日高点</label>
         <div class="grid">
             <label>高点下限 %<input id="near20dHigh" type="number" value="97" step="0.1"></label>
             <label>跳过开盘分时<input id="skipOpenMinutes" type="number" value="5" min="0"></label>
         </div>
-        <label class="check"><input id="enableVwap" type="checkbox" checked>分时运行在均价线上方</label>
+        <label class="check"><input id="enableVwap" type="checkbox">分时运行在均价线上方</label>
         <div class="grid">
             <label>水上比例 %<input id="aboveVwapRatio" type="number" value="100" step="1" min="1" max="100"></label>
             <label>急拉分钟窗口<input id="rapidWindow" type="number" value="5" min="1"></label>
