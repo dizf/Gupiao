@@ -8,32 +8,27 @@
   const status = $("#status");
   const dot = $("#statusDot");
   const log = $("#log");
+  const results = $("#results");
   const resultBadge = $("#resultBadge");
 
-  function activeToken() {
-    return window.__backtestToken || window.__gupiaoActiveToken ||
-      window.__gupiaoActiveToken === null ? window.__gupiaoActiveToken :
-      (window.__backtestToken || null);
-  }
+  function taskButtons() { return [screenBtn, monitorBtn, similarBtn, backtestBtn].filter(Boolean); }
+  function runningButton(btn) { return /停止/.test(btn?.textContent || ""); }
 
   function stopAll() {
-    if (window.__backtestToken) stopToken(window.__backtestToken);
-    [window.__gupiaoScreenToken, window.__gupiaoMonitorToken, window.__gupiaoSimilarToken]
-      .filter(Boolean).forEach((t) => stopToken(t));
-    if (window.__gupiaoActiveToken) stopToken(window.__gupiaoActiveToken);
-    setTimeout(refreshState, 50);
+    const running = taskButtons().filter(runningButton);
+    running.forEach((btn) => btn.click());
+    if (!running.length && window.__backtestToken && typeof stopToken === "function") stopToken(window.__backtestToken);
+    setTimeout(refreshState, 80);
   }
 
   function refreshState() {
-    const running = Boolean(window.__backtestToken || window.__gupiaoScreenToken || window.__gupiaoMonitorToken || window.__gupiaoSimilarToken || window.__gupiaoActiveToken);
+    const running = taskButtons().some(runningButton);
     if (cancelBtn) cancelBtn.classList.toggle("show", running);
-    [screenBtn, monitorBtn, similarBtn, backtestBtn].forEach((btn) => {
-      if (!btn) return;
-      const runningButton = /停止|停止中|取消/.test(btn.textContent);
-      btn.classList.toggle("running", runningButton);
-      btn.setAttribute("aria-busy", runningButton ? "true" : "false");
+    taskButtons().forEach((btn) => {
+      const active = runningButton(btn);
+      btn.classList.toggle("running", active);
+      btn.setAttribute("aria-busy", active ? "true" : "false");
     });
-    if (dot && running) dot.className = "dot running";
   }
 
   function decorateStatus() {
@@ -46,6 +41,9 @@
   }
 
   let renderingLog = false;
+  function escapeHtml(value) {
+    return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+  }
   function highlightLog() {
     if (!log || renderingLog) return;
     const text = log.textContent || "";
@@ -64,13 +62,10 @@
   }
 
   function updateResultBadge() {
-    if (!resultBadge) return;
-    const rows = window.state?.exportRows || window.state?.screenRows || [];
-    resultBadge.textContent = `${rows.length || 0} 条`;
-  }
-
-  function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    if (!resultBadge || !results) return;
+    const cards = results.querySelectorAll(".result-card").length;
+    const rows = results.querySelectorAll("tbody tr").length;
+    resultBadge.textContent = `${Math.max(cards, rows)} 条`;
   }
 
   if (cancelBtn) cancelBtn.addEventListener("click", stopAll);
@@ -78,13 +73,14 @@
   if (logButton) logButton.addEventListener("click", () => {
     const section = $("#logSection");
     if (section) section.open = true;
-    setTimeout(() => $("#log")?.scrollIntoView({ behavior: "smooth", block: "center" }), 30);
+    setTimeout(() => log?.scrollIntoView({ behavior: "smooth", block: "center" }), 30);
   });
   const exportSimilar = $("#exportButton2");
   if (exportSimilar) exportSimilar.addEventListener("click", () => window.saveResult?.());
 
   if (status) new MutationObserver(decorateStatus).observe(status, { childList: true, characterData: true, subtree: true });
   if (log) new MutationObserver(() => { if (!renderingLog) highlightLog(); }).observe(log, { childList: true, characterData: true, subtree: true });
+  if (results) new MutationObserver(updateResultBadge).observe(results, { childList: true, subtree: true });
   setInterval(refreshState, 250);
   setInterval(updateResultBadge, 500);
   decorateStatus();
