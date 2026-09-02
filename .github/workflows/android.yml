@@ -28,16 +28,22 @@ jobs:
           node --check android/app/src/main/assets/app.js
           node --check android/app/src/main/assets/backtest.js
           node --check android/app/src/main/assets/ui.js
+          node --check android/app/src/main/assets/features.js
 
-      - name: Inject mobile UI controller
+      - name: Inject mobile UI and feature controllers
         run: |
           python3 - <<'PY'
           from pathlib import Path
           path = Path("android/app/src/main/assets/index.html")
           text = path.read_text(encoding="utf-8")
-          marker = '<script src="ui.js"></script>'
+          marker = '<script src="features.js"></script>'
           if marker not in text:
-              text = text.replace('<script src="app.js"></script><script src="backtest.js"></script>', '<script src="app.js"></script><script src="backtest.js"></script><script src="ui.js"></script>')
+              old = '<script src="app.js"></script><script src="backtest.js"></script>'
+              new = old + '<script src="features.js"></script><script src="ui.js"></script>'
+              if old in text:
+                  text = text.replace(old, new)
+              else:
+                  text = text.replace('</body>', '<script src="features.js"></script><script src="ui.js"></script></body>')
               path.write_text(text, encoding="utf-8")
           PY
 
