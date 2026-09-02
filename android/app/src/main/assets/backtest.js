@@ -66,8 +66,8 @@ function btSummary(samples) {
   return {
     样本数: samples.length,
     次日高开率: `${btPct(rate(open, 0))}%`,
-    高开≥1%: `${btPct(rate(open, 1))}%`,
-    高开≥2%: `${btPct(rate(open, 2))}%`,
+    "高开≥1%": `${btPct(rate(open, 1))}%`,
+    "高开≥2%": `${btPct(rate(open, 2))}%`,
     平均开盘涨跌: `${btPct(avg(open))}%`,
     平均最高涨跌: `${btPct(avg(high))}%`,
     平均收盘涨跌: `${btPct(avg(close))}%`
@@ -137,7 +137,7 @@ async function runT1Backtest() {
     btRenderSummary(summaries, allSamples);
     logMessage(`T+1 回测完成：共 ${allSamples.length} 个历史触发样本。`);
     if (aggregate) {
-      logMessage(`合计：次日高开率 ${aggregate.次日高开率}，高开≥1% ${aggregate.高开≥1%}，高开≥2% ${aggregate.高开≥2%}。`);
+      logMessage(`合计：次日高开率 ${aggregate.次日高开率}，高开≥1% ${aggregate["高开≥1%"]}，高开≥2% ${aggregate["高开≥2%"]}。`);
     }
     setStatus(`T+1 回测完成：${allSamples.length} 个历史样本`);
   } catch (error) {
