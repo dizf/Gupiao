@@ -1,6 +1,7 @@
 (() => {
   const API_FEATURE = {
-    news: "https://np-listapi.eastmoney.com/nlist/api/list/get",
+    // np-listapi 的旧 nlist/api/list/get 已返回 404；7x24 现用东财网页端使用的快讯接口。
+    news: "https://np-weblist.eastmoney.com/comm/web/getFastNewsList",
     quote: "https://push2.eastmoney.com/api/qt/stock/get",
     ulist: "https://push2.eastmoney.com/api/qt/ulist.np/get"
   };
@@ -103,13 +104,12 @@
   }
 
   function parseNews(payload) {
-    const root = payload?.data || payload?.result || payload || {};
-    const raw = root.list || root.data || root.items || root.news || root.rows || [];
-    const rows = Array.isArray(raw) ? raw : Object.values(raw || {});
+    const list = payload?.data?.fastNewsList || payload?.data?.list || payload?.data?.items || [];
+    const rows = Array.isArray(list) ? list : Object.values(list || {});
     return rows.map((item) => {
-      const title = String(item.title || item.cmsTitle || item.content || item.text || item.NewsTitle || "").replace(/<[^>]+>/g, "").trim();
+      const title = String(item.title || item.cmsTitle || item.NewsTitle || "").replace(/<[^>]+>/g, "").trim();
       const time = String(item.showTime || item.publishTime || item.time || item.ctime || item.datetime || item.NewsTime || "");
-      const content = String(item.digest || item.summary || item.content || item.text || "").replace(/<[^>]+>/g, "").trim();
+      const content = String(item.summary || item.digest || item.content || item.text || "").replace(/<[^>]+>/g, "").trim();
       const url = String(item.url || item.newsUrl || item.link || item.NewsUrl || "");
       return { title, time, content, url };
     }).filter((item) => item.title);
@@ -155,13 +155,16 @@
   async function loadNews(showAll = false) {
     const status = $("#newsStatus");
     if (status) status.textContent = "正在拉取 7×24 快讯…";
+    log("新闻：开始请求东方财富 7×24 快讯接口…");
     try {
       const { start, end } = overnightRange();
       const payload = await request(API_FEATURE.news, {
         client: "web",
-        column_id: 102,
-        limit: 80,
-        last_time: Math.floor(Date.now() / 1000)
+        biz: "web_724",
+        fastColumn: 102,
+        sortEnd: "",
+        pageSize: 80,
+        req_trace: String(Date.now())
       });
       const parsed = parseNews(payload);
       newsRows = parsed.filter((item) => {
@@ -172,9 +175,11 @@
       if (status) status.textContent = `隔夜时段抓到 ${newsRows.length} 条，显示 ${showAll ? newsRows.length : Math.min(newsRows.length, 20)} 条`;
       renderNews(newsRows, showAll);
       state.newsLoadedAt = Date.now();
+      log(`新闻：接口返回 ${parsed.length} 条，隔夜时段保留 ${newsRows.length} 条。`);
     } catch (error) {
       if (status) status.textContent = `新闻获取失败：${error.message}`;
       renderNews([], false);
+      log(`新闻获取失败：${error.message}`);
     }
   }
 
