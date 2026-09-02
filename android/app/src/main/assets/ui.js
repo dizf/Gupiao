@@ -40,25 +40,32 @@
     refreshState();
   }
 
-  let renderingLog = false;
   function escapeHtml(value) {
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
+
+  let renderingLog = false;
+  let logObserver = null;
   function highlightLog() {
     if (!log || renderingLog) return;
     const text = log.textContent || "";
     const lines = text.split("\n").filter(Boolean).slice(-100);
     renderingLog = true;
-    log.innerHTML = lines.map((line, index) => {
-      let cls = "info";
-      if (/排除|关闭|没有|不足|停止/.test(line)) cls = "warn";
-      if (/失败|错误/.test(line)) cls = "error";
-      if (/完成|成功|剩余 \d+ 只|合计：/.test(line)) cls = "ok";
-      if (index === lines.length - 1) cls += " latest";
-      return `<div class="logline ${cls}">${escapeHtml(line)}</div>`;
-    }).join("");
+    if (logObserver) logObserver.disconnect();
+    try {
+      log.innerHTML = lines.map((line, index) => {
+        let cls = "info";
+        if (/排除|关闭|没有|不足|停止/.test(line)) cls = "warn";
+        if (/失败|错误/.test(line)) cls = "error";
+        if (/完成|成功|剩余 \d+ 只|合计：/.test(line)) cls = "ok";
+        if (index === lines.length - 1) cls += " latest";
+        return `<div class="logline ${cls}">${escapeHtml(line)}</div>`;
+      }).join("");
+    } finally {
+      renderingLog = false;
+      if (logObserver) logObserver.observe(log, { childList: true, characterData: true, subtree: true });
+    }
     log.scrollTop = log.scrollHeight;
-    renderingLog = false;
   }
 
   function updateResultBadge() {
@@ -79,7 +86,12 @@
   if (exportSimilar) exportSimilar.addEventListener("click", () => window.saveResult?.());
 
   if (status) new MutationObserver(decorateStatus).observe(status, { childList: true, characterData: true, subtree: true });
-  if (log) new MutationObserver(() => { if (!renderingLog) highlightLog(); }).observe(log, { childList: true, characterData: true, subtree: true });
+  if (log) {
+    logObserver = new MutationObserver(() => {
+      if (!renderingLog) highlightLog();
+    });
+    logObserver.observe(log, { childList: true, characterData: true, subtree: true });
+  }
   if (results) new MutationObserver(updateResultBadge).observe(results, { childList: true, subtree: true });
   setInterval(refreshState, 250);
   setInterval(updateResultBadge, 500);
