@@ -6,9 +6,10 @@ from __future__ import annotations
 
 import argparse
 import csv
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from functools import lru_cache
 import json
+import re
 import math
 import os
 from pathlib import Path
@@ -39,7 +40,8 @@ RAPID_RISE_WINDOW = 5
 RAPID_RISE_PCT = 2.0
 RAPID_VOLUME_MULTIPLE = 1.5
 LHB_COUNT_MIN = 10
-MONITOR_INTERVAL = 60
+MONITOR_INTERVAL = 15
+MONITOR_INFLOW_MIN = 10_000_000  # 实时监控：主力净流入 >= 1000万
 MAX_MA5_BIAS = 0.07  # 股价远离5日线不进：相对 MA5 偏离上限
 NEAR_20D_HIGH = 0.97  # 上方无套牢压力：收盘不低于近20日高点的 97%
 PLATFORM_LOOKBACK = 15  # 未跌破近15日平台低点
@@ -120,6 +122,9 @@ class ScreenConfig:
     rapid_rise_window: int = RAPID_RISE_WINDOW
     rapid_rise_pct: float = RAPID_RISE_PCT
     rapid_volume_multiple: float = RAPID_VOLUME_MULTIPLE
+    enable_industry_top5: bool = True
+    enable_us_sector: bool = True
+    enable_notify: bool = True
     monitor_interval: int = MONITOR_INTERVAL
 
     def to_dict(self) -> dict[str, Any]:
@@ -974,10 +979,12 @@ def is_above_vwap(trends: pd.DataFrame, config: ScreenConfig) -> bool:
     if trends.empty or len(trends) <= config.skip_open_minutes:
         return False
     body = trends.iloc[config.skip_open_minutes:]
+    if body.empty:
+        return False
     above = body["收盘"] >= body["均价"]
     ratio = float(above.mean())
     now_above = bool(trends["收盘"].iloc[-1] >= trends["均价"].iloc[-1])
-    return now_above and ratio >= ABOVE_VWAP_RATIO
+    return now_above and ratio >= config.above_vwap_ratio
 
 
 def rapid_rise_metrics(
@@ -1027,6 +1034,323 @@ def warn_if_before_1430() -> None:
         log("提示：未到 14:30，量能/换手/分时仍会变化，结果仅供预览。")
 
 
+
+US_ETF_MAP: list[tuple[re.Pattern[str], list[str]]] = [
+    (re.compile(r"半导体|芯片|集成电路|电子|计算机|软件|通信|互联网|人工智能|AI|消费电子"), ["107.XLK", "107.XLC"]),
+    (re.compile(r"银行|证券|保险|金融|多元金融"), ["107.XLF"]),
+    (re.compile(r"石油|煤炭|天然气|油气|能源"), ["107.XLE"]),
+    (re.compile(r"有色|金属|钢铁|化工|材料|稀土|锂|铝|铜"), ["107.XLB"]),
+    (re.compile(r"汽车|家电|零售|旅游|酒店|餐饮|食品|饮料|白酒|纺织|服装|传媒|游戏"), ["107.XLY", "107.XLP"]),
+    (re.compile(r"医药|医疗|生物|制药|医疗器械"), ["107.XLV"]),
+    (re.compile(r"电力|公用事业|水务|燃气"), ["107.XLU"]),
+    (re.compile(r"房地产|地产|建筑|建材|园林"), ["107.XLRE"]),
+    (re.compile(r"机械|军工|航空|航天|工业|设备|工程"), ["107.XLI"]),
+]
+_INDUSTRY_CACHE: dict[str, dict[str, Any]] = {}
+_LEADER_CACHE: dict[str, set[str]] = {}
+_US_ETF_CACHE: dict[str, dict[str, Any]] = {}
+NEWS_URL = "https://np-weblist.eastmoney.com/comm/web/getFastNewsList"
+QUOTE_URL = "https://push2.eastmoney.com/api/qt/stock/get"
+ULIST_URL = "https://push2.eastmoney.com/api/qt/ulist.np/get"
+
+
+def monitor_config(config: ScreenConfig) -> ScreenConfig:
+    """对齐安卓 live 监控：关闭大部分技术条件，强制急拉。"""
+    return replace(
+        config,
+        enable_hot_board=False,
+        enable_lhb_count=False,
+        enable_limit_up_gene=False,
+        enable_volume_stair=False,
+        enable_ma_bullish=False,
+        enable_ma5_bias=False,
+        enable_platform=False,
+        enable_near_high=False,
+        enable_vwap=False,
+        enable_stronger_than_index=False,
+        enable_tail_high=False,
+        enable_rapid_rise=True,
+    )
+
+
+def clear_feature_caches() -> None:
+    _INDUSTRY_CACHE.clear()
+    _LEADER_CACHE.clear()
+    _US_ETF_CACHE.clear()
+
+
+def fetch_industry(code: str) -> dict[str, Any]:
+    code = str(code).zfill(6)
+    cached = _INDUSTRY_CACHE.get(code)
+    if cached is not None:
+        return cached
+    try:
+        payload = get_json(
+            QUOTE_URL,
+            {
+                "secid": to_secid(code),
+                "fields": "f57,f58,f116,f117,f127,f128",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            },
+        )
+        data = payload.get("data") or {}
+        info = {
+            "name": str(data.get("f127") or "").strip(),
+            "industry_code": str(data.get("f128") or "").strip(),
+            "float_mv": float(data.get("f117") or data.get("f116") or 0),
+        }
+    except Exception:  # noqa: BLE001
+        info = {"name": "", "industry_code": "", "float_mv": 0.0}
+    _INDUSTRY_CACHE[code] = info
+    return info
+
+
+def related_us_etfs(industry: str) -> list[str]:
+    for pattern, tickers in US_ETF_MAP:
+        if pattern.search(industry or ""):
+            return list(tickers)
+    return []
+
+
+def check_industry_top5(code: str) -> dict[str, Any]:
+    info = fetch_industry(code)
+    industry_code = str(info.get("industry_code") or "")
+    industry = str(info.get("name") or "")
+    if not industry_code:
+        return {"pass": True, "reason": "行业信息不可用", "industry": industry}
+    if industry_code in _LEADER_CACHE:
+        leaders = _LEADER_CACHE[industry_code]
+        return {
+            "pass": (not leaders) or (str(code).zfill(6) in leaders),
+            "industry": industry,
+            "unavailable": not bool(leaders),
+            "reason": "行业龙头数据不可用" if not leaders else "",
+        }
+    try:
+        rows = fetch_clist(
+            f"b:{industry_code}+f:!50",
+            "f12,f14,f21,f2,f3",
+            extra={"fid": "f21", "pz": "100"},
+        )
+        ranked = sorted(rows, key=lambda item: float(item.get("f21") or 0), reverse=True)[:5]
+        leaders = {str(item.get("f12") or "").zfill(6) for item in ranked}
+    except Exception:  # noqa: BLE001
+        leaders = set()
+    _LEADER_CACHE[industry_code] = leaders
+    if not leaders:
+        return {
+            "pass": True,
+            "reason": "行业龙头数据不可用",
+            "industry": industry,
+            "unavailable": True,
+        }
+    return {
+        "pass": str(code).zfill(6) in leaders,
+        "industry": industry,
+        "unavailable": False,
+        "reason": "",
+    }
+
+
+def check_us_sector(industry: str) -> dict[str, Any]:
+    tickers = related_us_etfs(industry)
+    if not tickers:
+        return {"pass": True, "unavailable": True, "reason": "未找到对应美股行业"}
+    key = ",".join(tickers)
+    cached = _US_ETF_CACHE.get(key)
+    if cached is not None:
+        return cached
+    try:
+        payload = get_json(
+            ULIST_URL,
+            {
+                "secids": key,
+                "fields": "f2,f3,f12,f14,f43,f60",
+                "ut": "bd1d9ddb04089700cf9c27f6f7426281",
+            },
+        )
+        diff = (payload.get("data") or {}).get("diff") or []
+        if isinstance(diff, dict):
+            diff = list(diff.values())
+        valid = [item for item in diff if float(item.get("f2") or 0) > 0]
+        if not valid:
+            result = {"pass": True, "unavailable": True, "reason": "美股行业数据不可用"}
+        else:
+            result = {
+                "pass": all(float(item.get("f3") or 0) > 0 for item in valid),
+                "unavailable": False,
+                "detail": " / ".join(
+                    f"{item.get('f14') or item.get('f12')} {float(item.get('f3') or 0):.2f}%"
+                    for item in valid
+                ),
+                "reason": "",
+            }
+    except Exception:  # noqa: BLE001
+        result = {"pass": True, "unavailable": True, "reason": "美股行业数据获取失败"}
+    _US_ETF_CACHE[key] = result
+    return result
+
+
+def _parse_news_time(value: str) -> datetime | None:
+    cleaned = str(value or "").replace("T", " ").replace("/", "-").strip()[:19]
+    if not cleaned:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _news_tag(title: str, content: str) -> str:
+    blob = f"{title}{content}"
+    if re.search(
+        r"增持|回购|中标|签约|获批|突破|增长|上调|盈利|订单|扩产|创新高|利好|重大进展|获奖|并购",
+        blob,
+    ):
+        return "可能利好"
+    if re.search(
+        r"减持|亏损|下调|处罚|诉讼|调查|风险|暴跌|下修|违约|暂停|终止|利空",
+        blob,
+    ):
+        return "风险提示"
+    return "待判断"
+
+
+def _parse_news_time(value: str) -> datetime | None:
+    cleaned = str(value or "").replace("T", " ").replace("/", "-").strip()[:19]
+    if not cleaned:
+        return None
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M"):
+        try:
+            return datetime.strptime(cleaned, fmt)
+        except ValueError:
+            continue
+    return None
+
+
+def _news_tag(title: str, content: str) -> str:
+    blob = f"{title}{content}"
+    if re.search(
+        r"增持|回购|中标|签约|获批|突破|增长|上调|盈利|订单|扩产|创新高|利好|重大进展|获奖|并购",
+        blob,
+    ):
+        return "可能利好"
+    if re.search(
+        r"减持|亏损|下调|处罚|诉讼|调查|风险|暴跌|下修|违约|暂停|终止|利空",
+        blob,
+    ):
+        return "风险提示"
+    return "待判断"
+
+
+def fetch_overnight_news(limit: int = 80, hours: int = 12) -> list[dict[str, Any]]:
+    """最近 N 小时快讯（默认 12 小时），仅展示不参与筛选。
+
+    东财接口按时间倒序返回最新快讯；需要时用 sortEnd 向前翻页，
+    直到覆盖 [now-hours, now] 时间窗。
+    """
+    now = datetime.now()
+    hours = max(1, int(hours))
+    start = now - timedelta(hours=hours)
+    end = now
+
+    page_size = 80
+    max_pages = 20
+    sort_end = ""
+    seen_codes: set[str] = set()
+    rows: list[dict[str, Any]] = []
+    reached_start = False
+
+    for _ in range(max_pages):
+        try:
+            payload = get_json(
+                NEWS_URL,
+                {
+                    "client": "web",
+                    "biz": "web_724",
+                    "fastColumn": "102",
+                    "sortEnd": sort_end,
+                    "pageSize": str(page_size),
+                    "req_trace": str(int(time.time() * 1000)),
+                },
+            )
+        except Exception:  # noqa: BLE001
+            break
+        data = payload.get("data") or {}
+        raw = data.get("fastNewsList") or data.get("list") or data.get("items") or []
+        if isinstance(raw, dict):
+            raw = list(raw.values())
+        if not raw:
+            break
+
+        oldest_in_page: datetime | None = None
+        for item in raw:
+            code = str(item.get("code") or item.get("realSort") or "")
+            if code and code in seen_codes:
+                continue
+            if code:
+                seen_codes.add(code)
+            title = re.sub(
+                r"<[^>]+>",
+                "",
+                str(item.get("title") or item.get("cmsTitle") or ""),
+            ).strip()
+            if not title:
+                continue
+            time_text = str(
+                item.get("showTime")
+                or item.get("publishTime")
+                or item.get("time")
+                or item.get("ctime")
+                or ""
+            )
+            parsed = _parse_news_time(time_text)
+            if parsed is not None:
+                oldest_in_page = (
+                    parsed if oldest_in_page is None else min(oldest_in_page, parsed)
+                )
+                if parsed > end:
+                    continue
+                if parsed < start:
+                    reached_start = True
+                    continue
+            content = re.sub(
+                r"<[^>]+>",
+                "",
+                str(
+                    item.get("summary")
+                    or item.get("digest")
+                    or item.get("content")
+                    or ""
+                ),
+            ).strip()
+            url = str(item.get("url") or item.get("newsUrl") or item.get("link") or "")
+            rows.append(
+                {
+                    "标题": title,
+                    "时间": time_text,
+                    "摘要": content,
+                    "标签": _news_tag(title, content),
+                    "链接": url,
+                }
+            )
+
+        next_sort = str(data.get("sortEnd") or "")
+        if not next_sort or next_sort == sort_end:
+            break
+        sort_end = next_sort
+        if reached_start:
+            break
+        if oldest_in_page is not None and oldest_in_page < start:
+            break
+
+    rows.sort(key=lambda item: item["时间"], reverse=True)
+    return rows[:limit]
+
+
+
 def filter_basic(df: pd.DataFrame, config: ScreenConfig) -> pd.DataFrame:
     name = df["名称"].fillna("")
     mask = pd.Series(True, index=df.index)
@@ -1054,6 +1378,26 @@ def inspect_one(
     log_callback: Callable[[str], None],
 ) -> dict[str, Any] | None:
     code, name = row["代码"], row["名称"]
+    if config.enable_industry_top5:
+        leader = check_industry_top5(code)
+        if not leader.get("pass"):
+            log_callback(
+                f"   排除 {code} {name}：不在{leader.get('industry') or '所属行业'}流通市值前5"
+            )
+            return None
+        if leader.get("reason"):
+            log_callback(f"   {code} {name}：{leader['reason']}，保留")
+    if config.enable_us_sector:
+        industry_name = str(fetch_industry(code).get("name") or "")
+        us = check_us_sector(industry_name)
+        if not us.get("pass"):
+            log_callback(
+                f"   排除 {code} {name}：对应美股行业隔夜未全部上涨"
+                f"（{us.get('detail') or us.get('reason') or ''}）"
+            )
+            return None
+        if us.get("unavailable"):
+            log_callback(f"   {code} {name}：{us.get('reason') or '美股行业未匹配'}，保留")
     needs_hist = any(
         (
             config.enable_limit_up_gene,
@@ -1182,14 +1526,18 @@ def clear_data_cache() -> None:
 
 def run_screen(
     config: ScreenConfig | None = None,
-    workers: int = 2,
+    workers: int = 4,
     log_callback: Callable[[str], None] = log,
     stop_event: threading.Event | None = None,
+    live: bool = False,
 ) -> pd.DataFrame:
     config = config or ScreenConfig()
+    if live:
+        config = monitor_config(config)
     if stop_event and stop_event.is_set():
         return pd.DataFrame()
     clear_data_cache()
+    clear_feature_caches()
     log_callback(f"本地缓存：历史日K按天缓存，热点板块 {HOT_BOARD_CACHE_TTL // 60} 分钟缓存")
     log_callback("1/4 使用东方财富拉取行情，过滤基础条件...")
     spot = fetch_spot()
@@ -1199,6 +1547,9 @@ def run_screen(
         raise RuntimeError("未取到行情")
     basic = filter_basic(spot, config)
     log_callback(f"   基础条件剩余 {len(basic)} 只")
+    if live and not basic.empty and "主力净流入" in basic.columns:
+        basic = basic[basic["主力净流入"].fillna(0) >= MONITOR_INFLOW_MIN].copy()
+        log_callback(f"   主力净流入 ≥ 1000 万剩余 {len(basic)} 只")
     if not basic.empty:
         preview_cols = [
             c for c in ["代码", "名称", "涨跌幅", "换手率", "量比", "流通市值_亿"]

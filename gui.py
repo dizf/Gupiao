@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import json
 import math
+import winsound
 import queue
 import threading
-from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 from tkinter import BooleanVar, END, StringVar, filedialog, messagebox
@@ -15,6 +15,7 @@ from tkinter import ttk
 
 import pandas as pd
 
+import backtest
 import screen
 
 
@@ -25,18 +26,26 @@ class ScreenApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
         self.title("A股选股与异动监控")
-        self.geometry("1120x760")
-        self.minsize(960, 620)
+        self.geometry("1180x820")
+        self.minsize(980, 680)
         self.value_vars: dict[str, StringVar] = {}
         self.bool_vars: dict[str, BooleanVar] = {}
         self.result = pd.DataFrame()
+        self.backtest_summary = pd.DataFrame()
+        self.backtest_samples = pd.DataFrame()
+        self.news_rows: list[dict] = []
         self.messages: queue.Queue[tuple[str, object]] = queue.Queue()
         self.running = False
         self.monitoring = False
+        self.screen_stop = threading.Event()
         self.monitor_stop = threading.Event()
+        self.backtest_stop = threading.Event()
+        self.monitor_alert_codes: set[str] = set()
+        self.log_path = Path.cwd() / "runtime_log.txt"
         self.similarity_window: tk.Toplevel | None = None
         self._build()
         self._load_config()
+        self._restore_log()
         self.after(100, self._poll_messages)
 
     def _build(self) -> None:
@@ -45,39 +54,52 @@ class ScreenApp(tk.Tk):
 
         buttons = ttk.Frame(self, padding=(10, 8))
         buttons.grid(row=0, column=0, sticky="ew")
-        buttons.columnconfigure(6, weight=1)
+        buttons.columnconfigure(8, weight=1)
         self.start_button = ttk.Button(buttons, text="开始选股", command=self._start)
         self.start_button.grid(row=0, column=0, padx=(0, 8))
+        self.cancel_button = ttk.Button(
+            buttons, text="取消任务", command=self._cancel_task, state="disabled"
+        )
+        self.cancel_button.grid(row=0, column=1, padx=8)
         ttk.Button(buttons, text="恢复默认", command=self._reset_defaults).grid(
-            row=0, column=1, padx=8
+            row=0, column=2, padx=8
         )
         ttk.Button(buttons, text="保存参数", command=self._save_config).grid(
-            row=0, column=2, padx=8
+            row=0, column=3, padx=8
         )
         self.save_result_button = ttk.Button(
             buttons, text="保存结果 CSV", command=self._save_result, state="disabled"
         )
-        self.save_result_button.grid(row=0, column=3, padx=8)
+        self.save_result_button.grid(row=0, column=4, padx=8)
         ttk.Button(buttons, text="相似走势", command=self._open_similarity).grid(
-            row=0, column=4, padx=8
+            row=0, column=5, padx=8
         )
         self.monitor_button = ttk.Button(
             buttons, text="实时监控", command=self._toggle_monitor
         )
-        self.monitor_button.grid(row=0, column=5, padx=8)
+        self.monitor_button.grid(row=0, column=6, padx=8)
+        ttk.Button(buttons, text="复制日志", command=self._copy_log).grid(
+            row=0, column=7, padx=8
+        )
         self.status_var = StringVar(value="就绪")
         ttk.Label(buttons, textvariable=self.status_var).grid(
-            row=0, column=6, sticky="e"
+            row=0, column=8, sticky="e"
         )
 
         notebook = ttk.Notebook(self)
         notebook.grid(row=1, column=0, sticky="nsew", padx=10)
         basic_tab, basic_content = self._scrollable_tab(notebook)
         technical_tab, technical_content = self._scrollable_tab(notebook)
+        backtest_tab, backtest_content = self._scrollable_tab(notebook)
+        news_tab, news_content = self._scrollable_tab(notebook)
         notebook.add(basic_tab, text="基础条件")
         notebook.add(technical_tab, text="技术条件")
+        notebook.add(backtest_tab, text="T+1 回测")
+        notebook.add(news_tab, text="近期新闻")
         self._build_basic_tab(basic_content)
         self._build_technical_tab(technical_content)
+        self._build_backtest_tab(backtest_content)
+        self._build_news_tab(news_content)
 
         bottom = ttk.PanedWindow(self, orient="vertical")
         bottom.grid(row=2, column=0, sticky="nsew", padx=10, pady=(8, 10))
@@ -181,7 +203,10 @@ class ScreenApp(tk.Tk):
         row = self._value_row(
             parent, row, "rapid_volume_multiple", "急拉最小放量", "倍"
         )
-        self._value_row(parent, row, "monitor_interval", "实时刷新间隔", "秒")
+        row = self._value_row(parent, row, "monitor_interval", "实时刷新间隔", "秒")
+        row = self._check_row(parent, row, "enable_industry_top5", "仅查找行业龙头前五名")
+        row = self._check_row(parent, row, "enable_us_sector", "美股相关行业隔夜上涨")
+        self._check_row(parent, row, "enable_notify", "实时监控命中时提醒")
 
     def _check_var(self, key: str) -> BooleanVar:
         self.bool_vars[key] = BooleanVar(value=True)
@@ -333,6 +358,9 @@ class ScreenApp(tk.Tk):
                 "rapid_volume_multiple", "急拉最小放量"
             )
             or 0,
+            enable_industry_top5=self.bool_vars["enable_industry_top5"].get(),
+            enable_us_sector=self.bool_vars["enable_us_sector"].get(),
+            enable_notify=self.bool_vars["enable_notify"].get(),
             monitor_interval=self._read_int("monitor_interval", "实时刷新间隔"),
         )
         if config.pct_min > config.pct_max or config.turnover_min > config.turnover_max:
@@ -355,8 +383,8 @@ class ScreenApp(tk.Tk):
             raise ValueError("急拉分钟窗口必须大于 0")
         if config.rapid_rise_pct < 0 or config.rapid_volume_multiple < 0:
             raise ValueError("急拉涨幅和放量倍数不能为负数")
-        if config.monitor_interval < 1:
-            raise ValueError("实时刷新间隔必须大于 0")
+        if config.monitor_interval < 15:
+            raise ValueError("实时刷新间隔必须大于等于 15 秒")
         return config
 
     def _save_config(self) -> bool:
@@ -386,9 +414,11 @@ class ScreenApp(tk.Tk):
         self._clear_result()
         self.running = True
         self.monitoring = False
+        self.screen_stop.clear()
         self.monitor_stop.clear()
         self.start_button.configure(state="disabled")
         self.monitor_button.configure(state="disabled")
+        self.cancel_button.configure(state="normal")
         self.save_result_button.configure(state="disabled")
         self.status_var.set("正在选股...")
         worker = threading.Thread(target=self._run_worker, args=(config,), daemon=True)
@@ -397,7 +427,9 @@ class ScreenApp(tk.Tk):
     def _toggle_monitor(self) -> None:
         if self.monitoring:
             self.monitor_stop.set()
+            self.screen_stop.set()
             self.monitor_button.configure(state="disabled")
+            self.cancel_button.configure(state="disabled")
             self.status_var.set("正在停止实时监控...")
             return
         if self.running:
@@ -413,9 +445,12 @@ class ScreenApp(tk.Tk):
         self._clear_result()
         self.running = True
         self.monitoring = True
+        self.monitor_alert_codes.clear()
         self.monitor_stop.clear()
+        self.screen_stop.clear()
         self.start_button.configure(state="disabled")
         self.monitor_button.configure(text="停止监控")
+        self.cancel_button.configure(state="normal")
         self.save_result_button.configure(state="disabled")
         self.status_var.set("正在实时监控...")
         worker = threading.Thread(
@@ -427,8 +462,9 @@ class ScreenApp(tk.Tk):
         try:
             result = screen.run_screen(
                 config=config,
-                workers=2,
+                workers=4,
                 log_callback=lambda message: self.messages.put(("log", message)),
+                stop_event=self.screen_stop,
             )
             self.messages.put(("result", result))
         except Exception as exc:  # noqa: BLE001
@@ -437,16 +473,20 @@ class ScreenApp(tk.Tk):
             self.messages.put(("done", None))
 
     def _run_monitor_worker(self, config: screen.ScreenConfig) -> None:
-        live_config = replace(config, enable_tail_high=False)
         try:
             while not self.monitor_stop.is_set():
+                self.screen_stop.clear()
                 result = screen.run_screen(
-                    config=live_config,
-                    workers=2,
+                    config=config,
+                    workers=4,
                     log_callback=lambda message: self.messages.put(("log", message)),
+                    stop_event=self.screen_stop,
+                    live=True,
                 )
                 self.messages.put(("result", result))
-                if self.monitor_stop.wait(config.monitor_interval):
+                if config.enable_notify and isinstance(result, pd.DataFrame):
+                    self.messages.put(("notify", result))
+                if self.monitor_stop.wait(max(15, int(config.monitor_interval))):
                     break
         except Exception as exc:  # noqa: BLE001
             self.messages.put(("error", str(exc)))
@@ -465,11 +505,24 @@ class ScreenApp(tk.Tk):
                 elif kind == "error":
                     self._append_log(f"运行失败：{payload}")
                     messagebox.showerror("运行失败", str(payload))
+                elif kind == "notify":
+                    self._notify_monitor_hits(payload)
+                elif kind == "backtest_result":
+                    summary, samples = payload
+                    self.backtest_summary = summary
+                    self.backtest_samples = samples
+                    self._show_backtest_result(summary)
+                elif kind == "news":
+                    self.news_rows = list(payload or [])
+                    self._show_news(self.news_rows, all_rows=False)
                 elif kind == "done":
                     self.running = False
                     self.monitoring = False
                     self.start_button.configure(state="normal")
                     self.monitor_button.configure(state="normal", text="实时监控")
+                    self.cancel_button.configure(state="disabled")
+                    if hasattr(self, "backtest_button"):
+                        self.backtest_button.configure(state="normal", text="开始 T+1 回测")
                     self.save_result_button.configure(
                         state="normal" if not self.result.empty else "disabled"
                     )
@@ -492,6 +545,11 @@ class ScreenApp(tk.Tk):
         self.log_text.insert(END, message + "\n")
         self.log_text.see(END)
         self.log_text.configure(state="disabled")
+        try:
+            with self.log_path.open("a", encoding="utf-8") as fh:
+                fh.write(message + "\n")
+        except OSError:
+            pass
 
     def _clear_result(self) -> None:
         self.result_tree.delete(*self.result_tree.get_children())
@@ -727,6 +785,399 @@ class ScreenApp(tk.Tk):
             tree.column(column, width=max(90, min(180, len(column) * 16)))
         for values in result.itertuples(index=False, name=None):
             tree.insert("", END, values=values)
+
+
+    def _cancel_task(self) -> None:
+        self.screen_stop.set()
+        self.monitor_stop.set()
+        self.backtest_stop.set()
+        self.cancel_button.configure(state="disabled")
+        self.status_var.set("正在取消当前任务...")
+        self._append_log("已发出取消请求")
+
+    def _copy_log(self) -> None:
+        content = self.log_text.get("1.0", END).strip()
+        if not content:
+            messagebox.showinfo("复制日志", "暂无日志可复制")
+            return
+        self.clipboard_clear()
+        self.clipboard_append(content)
+        self.status_var.set("运行日志已复制到剪贴板")
+
+    def _restore_log(self) -> None:
+        if not self.log_path.exists():
+            return
+        try:
+            content = self.log_path.read_text(encoding="utf-8")
+        except OSError:
+            return
+        lines = content.splitlines()[-80:]
+        if not lines:
+            return
+        self.log_text.configure(state="normal")
+        self.log_text.delete("1.0", END)
+        self.log_text.insert(END, "\n".join(lines) + "\n")
+        self.log_text.see(END)
+        self.log_text.configure(state="disabled")
+
+    def _notify_monitor_hits(self, result: object) -> None:
+        if not isinstance(result, pd.DataFrame) or result.empty or "代码" not in result.columns:
+            self.monitor_alert_codes.clear()
+            return
+        codes = {str(code).zfill(6) for code in result["代码"].tolist()}
+        new_codes = codes - self.monitor_alert_codes
+        self.monitor_alert_codes &= codes
+        if not new_codes:
+            return
+        subset = result[result["代码"].astype(str).str.zfill(6).isin(new_codes)]
+        names = []
+        for _, row in subset.iterrows():
+            code = str(row["代码"]).zfill(6)
+            name = str(row.get("名称", ""))
+            names.append(f"{code} {name}".strip())
+            self.monitor_alert_codes.add(code)
+        text = "、".join(names[:8])
+        self._append_log(f"监控提醒：{text}")
+        try:
+            winsound.MessageBeep(winsound.MB_ICONEXCLAMATION)
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            messagebox.showinfo("实时监控命中", f"新命中：{text}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _build_backtest_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(3, weight=1)
+        row = 0
+        ttk.Label(parent, text="涨幅区间 (%)").grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Entry(parent, textvariable=self._value_var("bt_pct_min"), width=10).grid(
+            row=row, column=1, sticky="w"
+        )
+        ttk.Entry(parent, textvariable=self._value_var("bt_pct_max"), width=10).grid(
+            row=row, column=2, sticky="w"
+        )
+        self.value_vars["bt_pct_min"].set("3")
+        self.value_vars["bt_pct_max"].set("5")
+        row += 1
+        row = self._check_row(parent, row, "bt_ma_bullish", "历史样本要求均线多头")
+        self.bool_vars["bt_ma_bullish"].set(False)
+        row = self._check_value_row(
+            parent,
+            row,
+            "bt_near_high",
+            "历史样本要求接近20日高点",
+            "bt_near_high_pct",
+            "高点下限 (%)",
+        )
+        self.bool_vars["bt_near_high"].set(False)
+        self.value_vars["bt_near_high_pct"].set("97")
+        row = self._check_value_row(
+            parent,
+            row,
+            "bt_limit_up",
+            "历史样本要求近 N 日涨停",
+            "bt_limit_up_days",
+            "交易日",
+        )
+        self.bool_vars["bt_limit_up"].set(False)
+        self.value_vars["bt_limit_up_days"].set("20")
+        row = self._value_row(parent, row, "bt_min_samples", "历史样本最少次数", "次")
+        self.value_vars["bt_min_samples"].set("1")
+        row = self._value_row(parent, row, "bt_stock_limit", "最多回测股票数", "只")
+        self.value_vars["bt_stock_limit"].set("20")
+        ttk.Label(parent, text="指定股票代码（可空）").grid(row=row, column=0, sticky="w", pady=5)
+        ttk.Entry(parent, textvariable=self._value_var("bt_codes"), width=42).grid(
+            row=row, column=1, columnspan=3, sticky="w"
+        )
+        row += 1
+        actions = ttk.Frame(parent)
+        actions.grid(row=row, column=0, columnspan=4, sticky="w", pady=8)
+        self.backtest_button = ttk.Button(
+            actions, text="开始 T+1 回测", command=self._start_backtest
+        )
+        self.backtest_button.grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(actions, text="导出回测结果", command=self._export_backtest).grid(
+            row=0, column=1
+        )
+        row += 1
+        frame = ttk.Labelframe(parent, text="回测汇总", padding=6)
+        frame.grid(row=row, column=0, columnspan=4, sticky="nsew", pady=8)
+        parent.rowconfigure(row, weight=1)
+        frame.rowconfigure(0, weight=1)
+        frame.columnconfigure(0, weight=1)
+        self.backtest_tree = ttk.Treeview(frame, show="headings", height=10)
+        self.backtest_tree.grid(row=0, column=0, sticky="nsew")
+        scroll = ttk.Scrollbar(frame, orient="vertical", command=self.backtest_tree.yview)
+        scroll.grid(row=0, column=1, sticky="ns")
+        self.backtest_tree.configure(yscrollcommand=scroll.set)
+
+    def _build_news_tab(self, parent: ttk.Frame) -> None:
+        parent.columnconfigure(0, weight=1)
+        parent.rowconfigure(2, weight=1)
+        actions = ttk.Frame(parent)
+        actions.grid(row=0, column=0, sticky="w", pady=6)
+        ttk.Button(actions, text="刷新近12小时新闻", command=self._refresh_news).grid(
+            row=0, column=0, padx=(0, 8)
+        )
+        ttk.Label(actions, text="双击新闻可查看详情").grid(row=0, column=1, padx=8)
+        self.news_status = StringVar(value="等待加载…")
+        ttk.Label(parent, textvariable=self.news_status).grid(row=1, column=0, sticky="w")
+
+        self.news_category_tabs = ttk.Notebook(parent)
+        self.news_category_tabs.grid(row=2, column=0, sticky="nsew", pady=8)
+        self.news_trees: dict[str, ttk.Treeview] = {}
+        self.news_item_map: dict[str, dict] = {}
+        for category in ("全部", "可能利好", "风险提示", "待判断"):
+            frame = ttk.Frame(self.news_category_tabs)
+            self.news_category_tabs.add(frame, text=category)
+            frame.rowconfigure(0, weight=1)
+            frame.columnconfigure(0, weight=1)
+            tree = ttk.Treeview(
+                frame, show="headings", columns=("时间", "标签", "标题", "摘要"), height=14
+            )
+            tree.grid(row=0, column=0, sticky="nsew")
+            for col, width in (("时间", 140), ("标签", 80), ("标题", 300), ("摘要", 380)):
+                tree.heading(col, text=col)
+                tree.column(col, width=width, anchor="w")
+            scroll = ttk.Scrollbar(frame, orient="vertical", command=tree.yview)
+            scroll.grid(row=0, column=1, sticky="ns")
+            tree.configure(yscrollcommand=scroll.set)
+            tree.bind("<Double-1>", self._on_news_double_click)
+            self.news_trees[category] = tree
+
+    def _start_backtest(self) -> None:
+        if self.running:
+            self.backtest_stop.set()
+            self.backtest_button.configure(state="disabled")
+            self._append_log("正在停止 T+1 回测...")
+            return
+        try:
+            options = backtest.BacktestOptions(
+                pct_min=self._read_float("bt_pct_min", "回测涨幅最小值") or 0,
+                pct_max=self._read_float("bt_pct_max", "回测涨幅最大值") or 0,
+                require_ma_bullish=self.bool_vars["bt_ma_bullish"].get(),
+                require_near_high=self.bool_vars["bt_near_high"].get(),
+                near_20d_high=(self._read_float("bt_near_high_pct", "回测高点下限") or 0) / 100,
+                require_limit_up=self.bool_vars["bt_limit_up"].get(),
+                limit_up_lookback=self._read_int("bt_limit_up_days", "回测涨停回看"),
+                min_samples=self._read_int("bt_min_samples", "最少样本数"),
+                stock_limit=self._read_int("bt_stock_limit", "回测股票数"),
+            )
+            if options.pct_min > options.pct_max:
+                raise ValueError("回测涨幅最小值不能大于最大值")
+            if not 0 < options.near_20d_high <= 1:
+                raise ValueError("回测高点下限必须在 0 到 100% 之间")
+        except ValueError as exc:
+            messagebox.showerror("参数错误", str(exc))
+            return
+        self.running = True
+        self.backtest_stop.clear()
+        self.cancel_button.configure(state="normal")
+        self.start_button.configure(state="disabled")
+        self.monitor_button.configure(state="disabled")
+        self.backtest_button.configure(text="停止回测")
+        self.status_var.set("正在进行 T+1 回测...")
+        self._append_log("===== 开始 T+1 历史回测 =====")
+        codes = self.value_vars["bt_codes"].get()
+
+        def worker() -> None:
+            try:
+                summary, samples = backtest.run_t1_backtest(
+                    options,
+                    codes_text=codes,
+                    screen_rows=self.result,
+                    log_callback=lambda message: self.messages.put(("log", message)),
+                    stop_event=self.backtest_stop,
+                )
+                self.messages.put(("backtest_result", (summary, samples)))
+            except Exception as exc:  # noqa: BLE001
+                self.messages.put(("error", str(exc)))
+            finally:
+                self.messages.put(("done", None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_backtest_result(self, summary: pd.DataFrame) -> None:
+        self.backtest_tree.delete(*self.backtest_tree.get_children())
+        if summary is None or summary.empty:
+            self.backtest_tree.configure(columns=())
+            return
+        columns = list(summary.columns)
+        self.backtest_tree.configure(columns=columns)
+        for column in columns:
+            self.backtest_tree.heading(column, text=column)
+            self.backtest_tree.column(column, width=max(80, min(160, len(column) * 14)))
+        for values in summary.itertuples(index=False, name=None):
+            self.backtest_tree.insert("", END, values=values)
+
+    def _export_backtest(self) -> None:
+        if self.backtest_summary.empty and self.backtest_samples.empty:
+            messagebox.showinfo("导出回测", "暂无回测结果")
+            return
+        path = filedialog.asksaveasfilename(
+            title="导出回测结果",
+            defaultextension=".csv",
+            initialfile=f"backtest_{datetime.now().strftime('%Y%m%d_%H%M%S')}.csv",
+            filetypes=[("CSV 文件", "*.csv"), ("所有文件", "*.*")],
+        )
+        if not path:
+            return
+        export_df = (
+            self.backtest_summary if not self.backtest_summary.empty else self.backtest_samples
+        )
+        export_df.to_csv(path, index=False, encoding="utf-8-sig")
+        self.status_var.set(f"回测结果已保存：{Path(path).name}")
+
+    def _refresh_news(self) -> None:
+        self.news_status.set("正在拉取近12小时快讯…")
+
+        def worker() -> None:
+            try:
+                rows = screen.fetch_overnight_news(120)
+                self.messages.put(("news", rows))
+                self.messages.put(("log", f"近12小时新闻：获取 {len(rows)} 条"))
+            except Exception as exc:  # noqa: BLE001
+                self.messages.put(("error", str(exc)))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _show_all_news(self) -> None:
+        self._show_news(self.news_rows, all_rows=True)
+
+    def _news_groups(self, rows: list[dict]) -> dict[str, list[dict]]:
+        groups = {
+            "全部": list(rows),
+            "可能利好": [],
+            "风险提示": [],
+            "待判断": [],
+        }
+        for item in rows:
+            tag = str(item.get("标签") or "待判断")
+            if tag not in groups:
+                tag = "待判断"
+            groups[tag].append(item)
+        return groups
+
+    def _fill_news_tree(self, tree: ttk.Treeview, rows: list[dict]) -> None:
+        tree.delete(*tree.get_children())
+        for item in rows:
+            item_id = tree.insert(
+                "",
+                END,
+                values=(
+                    item.get("时间", ""),
+                    item.get("标签", ""),
+                    item.get("标题", ""),
+                    item.get("摘要", ""),
+                ),
+            )
+            self.news_item_map[(id(tree), item_id)] = item
+
+    def _show_news(self, rows: list[dict], all_rows: bool = False) -> None:
+        del all_rows  # 分类页签已展示全部，保留参数兼容旧调用
+        self.news_item_map = {}
+        groups = self._news_groups(rows)
+        for category, tree in self.news_trees.items():
+            subset = rows if category == "全部" else groups.get(category, [])
+            self._fill_news_tree(tree, subset)
+            count = len(subset)
+            for tab_id in self.news_category_tabs.tabs():
+                if self.news_category_tabs.nametowidget(tab_id) is tree.master:
+                    self.news_category_tabs.tab(tab_id, text=f"{category} ({count})")
+                    break
+        good = len(groups["可能利好"])
+        bad = len(groups["风险提示"])
+        pending = len(groups["待判断"])
+        self.news_status.set(
+            f"近12小时共 {len(rows)} 条｜可能利好 {good}｜风险提示 {bad}｜待判断 {pending}"
+            if rows
+            else "近12小时暂无快讯"
+        )
+
+    def _on_news_double_click(self, event: tk.Event) -> None:
+        tree = event.widget
+        if not isinstance(tree, ttk.Treeview):
+            return
+        item_id = tree.focus() or tree.identify_row(event.y)
+        if not item_id:
+            return
+        item = self.news_item_map.get((id(tree), item_id))
+        if not item:
+            return
+        self._open_news_detail(item)
+
+    def _open_news_detail(self, item: dict) -> None:
+        win = tk.Toplevel(self)
+        win.title("新闻详情")
+        win.geometry("640x420")
+        win.minsize(480, 320)
+        win.transient(self)
+        win.columnconfigure(0, weight=1)
+        win.rowconfigure(3, weight=1)
+
+        tag = str(item.get("标签") or "待判断")
+        title = str(item.get("标题") or "")
+        time_text = str(item.get("时间") or "")
+        summary = str(item.get("摘要") or "暂无摘要")
+        link = str(item.get("链接") or "")
+        tag_color = {
+            "可能利好": "#15803d",
+            "风险提示": "#b91c1c",
+            "待判断": "#1d4ed8",
+        }.get(tag, "#1d4ed8")
+
+        header = ttk.Frame(win, padding=12)
+        header.grid(row=0, column=0, sticky="ew")
+        header.columnconfigure(1, weight=1)
+        ttk.Label(header, text=tag, foreground=tag_color).grid(row=0, column=0, sticky="w")
+        ttk.Label(header, text=time_text, foreground="#64748b").grid(
+            row=0, column=1, sticky="e"
+        )
+
+        ttk.Label(
+            win,
+            text=title,
+            wraplength=600,
+            font=("Microsoft YaHei UI", 12, "bold"),
+            justify="left",
+        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        ttk.Separator(win).grid(row=2, column=0, sticky="ew", padx=12)
+
+        body = tk.Text(win, wrap="word", height=12, padx=8, pady=8)
+        body.grid(row=3, column=0, sticky="nsew", padx=(12, 0), pady=8)
+        body_scroll = ttk.Scrollbar(win, orient="vertical", command=body.yview)
+        body_scroll.grid(row=3, column=1, sticky="ns", padx=(0, 12), pady=8)
+        body.configure(yscrollcommand=body_scroll.set)
+        body.insert("1.0", summary)
+        if link:
+            body.insert(END, f"\n\n原文链接：\n{link}")
+        body.configure(state="disabled")
+
+        actions = ttk.Frame(win, padding=(12, 0, 12, 12))
+        actions.grid(row=4, column=0, sticky="ew")
+
+        def open_link() -> None:
+            if not link:
+                messagebox.showinfo("新闻详情", "这条快讯没有原文链接", parent=win)
+                return
+            import webbrowser
+
+            webbrowser.open(link)
+
+        def copy_text() -> None:
+            text_value = f"[{tag}] {time_text}\n{title}\n\n{summary}"
+            if link:
+                text_value += f"\n\n{link}"
+            self.clipboard_clear()
+            self.clipboard_append(text_value)
+            self.status_var.set("新闻内容已复制")
+
+        ttk.Button(actions, text="打开原文", command=open_link).grid(row=0, column=0, padx=(0, 8))
+        ttk.Button(actions, text="复制内容", command=copy_text).grid(row=0, column=1, padx=(0, 8))
+        ttk.Button(actions, text="关闭", command=win.destroy).grid(row=0, column=2)
+
 
 
 if __name__ == "__main__":

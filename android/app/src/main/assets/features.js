@@ -74,50 +74,79 @@
       content.append(title, us, usHelp, leader, leaderHelp);
     }
 
+    if (!$("#newsFeatureStyle")) {
+      const style = document.createElement("style");
+      style.id = "newsFeatureStyle";
+      style.textContent = `
+        .news-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
+        .news-tab{border:1px solid #d0d7e2;background:#fff;color:#344054;border-radius:999px;padding:6px 12px;font-size:12px;min-height:32px}
+        .news-tab.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
+        .news-card{cursor:pointer}
+        .news-modal{position:fixed;inset:0;z-index:80;display:none;align-items:flex-end;justify-content:center;background:rgba(15,23,42,.45);padding:16px}
+        .news-modal.open{display:flex}
+        .news-modal-card{width:min(640px,100%);max-height:78vh;overflow:auto;background:#fff;border-radius:18px;padding:16px;box-shadow:0 18px 40px rgba(15,23,42,.28)}
+        .news-modal-title{font-size:16px;font-weight:700;line-height:1.45;margin:8px 0}
+        .news-modal-body{white-space:pre-wrap;font-size:13px;line-height:1.6;color:#334155}
+        .news-modal-actions{display:flex;gap:8px;margin-top:14px}
+      `;
+      document.head.appendChild(style);
+    }
+
     if (!$("#newsSection")) {
       const section = document.createElement("details");
       section.id = "newsSection";
       section.className = "section";
-      section.open = true;
+      section.open = false;
       section.innerHTML = `
-        <summary>③ 隔夜新闻 <span class="summary-note">最新快讯 · 关键词提示</span></summary>
+        <summary>③ 近期新闻 <span class="summary-note">近12小时 · 关键词提示</span></summary>
         <div class="content">
-          <div class="help">默认查看上一交易日收盘后至今天早盘的最新快讯。标签只是关键词辅助，不代表确定的利好或利空。</div>
-          <div class="actions"><button id="refreshNewsButton">刷新隔夜新闻</button><button id="newsAllButton" class="secondary">查看全部</button></div>
+          <div class="help">默认查看近12小时快讯。标签只是关键词辅助，不代表确定的利好或利空。点击条目可查看详情。</div>
+          <div class="actions"><button id="refreshNewsButton">刷新近12小时新闻</button></div>
           <div id="newsStatus" class="hint">等待加载…</div>
+          <div id="newsTabs" class="news-tabs"></div>
           <div id="newsList" class="result-cards"><div class="empty">暂无新闻</div></div>
         </div>`;
       const anchor = [...document.querySelectorAll("details.section")].find((el) => el.textContent.includes("T+1 次日开盘回测"));
       (anchor?.parentElement || document.body).insertBefore(section, anchor || null);
     }
+
+    if (!$("#newsModal")) {
+      const modal = document.createElement("div");
+      modal.id = "newsModal";
+      modal.className = "news-modal";
+      modal.innerHTML = `
+        <div class="news-modal-card" role="dialog" aria-modal="true">
+          <div class="chiprow"><span id="newsModalTag" class="chip info">待判断</span><span id="newsModalTime" class="chip">时间未知</span></div>
+          <div id="newsModalTitle" class="news-modal-title"></div>
+          <div id="newsModalBody" class="news-modal-body"></div>
+          <div class="news-modal-actions">
+            <button id="newsModalOpen" type="button">打开原文</button>
+            <button id="newsModalClose" class="secondary" type="button">关闭</button>
+          </div>
+        </div>`;
+      document.body.appendChild(modal);
+    }
     installAccordionFix();
   }
 
-  function overnightRange() {
-    const now = new Date();
-    const start = new Date(now);
-    start.setDate(start.getDate() - 1);
-    start.setHours(17, 30, 0, 0);
-    const end = new Date(now);
-    end.setHours(9, 35, 0, 0);
+  function recentNewsRange(hours = 12) {
+    const end = new Date();
+    const start = new Date(end.getTime() - Math.max(1, hours) * 60 * 60 * 1000);
     return { start, end };
   }
 
-  function parseNews(payload) {
-    const list = payload?.data?.fastNewsList || payload?.data?.list || payload?.data?.items || [];
-    const rows = Array.isArray(list) ? list : Object.values(list || {});
-    return rows.map((item) => {
-      const title = String(item.title || item.cmsTitle || item.NewsTitle || "").replace(/<[^>]+>/g, "").trim();
-      const time = String(item.showTime || item.publishTime || item.time || item.ctime || item.datetime || item.NewsTime || "");
-      const content = String(item.summary || item.digest || item.content || item.text || "").replace(/<[^>]+>/g, "").trim();
-      const url = String(item.url || item.newsUrl || item.link || item.NewsUrl || "");
-      return { title, time, content, url };
-    }).filter((item) => item.title);
+  function parseNewsItem(item) {
+    const code = String(item.code || item.realSort || "");
+    const title = String(item.title || item.cmsTitle || item.NewsTitle || "").replace(/<[^>]+>/g, "").trim();
+    const time = String(item.showTime || item.publishTime || item.time || item.ctime || item.datetime || item.NewsTime || "");
+    const content = String(item.summary || item.digest || item.content || item.text || "").replace(/<[^>]+>/g, "").trim();
+    const url = String(item.url || item.newsUrl || item.link || item.NewsUrl || "");
+    return { code, title, time, content, url, tag: newsTag(`${title} ${content}`) };
   }
 
   function parseTime(value) {
     if (!value) return null;
-    const text = value.replace(/-/g, "/");
+    const text = String(value).replace("T", " ").replace(/-/g, "/").trim().slice(0, 19);
     const date = new Date(text);
     return Number.isNaN(date.getTime()) ? null : date;
   }
@@ -130,20 +159,44 @@
     return "待判断";
   }
 
-  function renderNews(rows, all = false) {
+  const NEWS_CATEGORIES = ["全部", "可能利好", "风险提示", "待判断"];
+  let newsRows = [];
+  let newsCategory = "全部";
+  let newsModalLink = "";
+
+  function newsGroups(rows) {
+    const groups = { "全部": [...rows], "可能利好": [], "风险提示": [], "待判断": [] };
+    for (const item of rows) {
+      const tag = NEWS_CATEGORIES.includes(item.tag) ? item.tag : "待判断";
+      groups[tag].push(item);
+    }
+    return groups;
+  }
+
+  function renderNewsTabs(rows) {
+    const tabs = $("#newsTabs");
+    if (!tabs) return;
+    const groups = newsGroups(rows);
+    tabs.innerHTML = NEWS_CATEGORIES.map((category) => {
+      const count = category === "全部" ? rows.length : groups[category].length;
+      const active = category === newsCategory ? " active" : "";
+      return `<button type="button" class="news-tab${active}" data-news-category="${category}">${category} (${count})</button>`;
+    }).join("");
+  }
+
+  function renderNews(rows) {
     const list = $("#newsList");
     if (!list) return;
-    const visible = all ? rows : rows.slice(0, 20);
+    const groups = newsGroups(rows);
+    const visible = newsCategory === "全部" ? rows : groups[newsCategory] || [];
+    renderNewsTabs(rows);
     if (!visible.length) {
-      list.innerHTML = '<div class="empty">当前时段没有抓到可解析的快讯。</div>';
+      list.innerHTML = '<div class="empty">近12小时没有抓到可解析的快讯。</div>';
       return;
     }
-    list.innerHTML = visible.map((item) => {
-      const tag = newsTag(`${item.title} ${item.content}`);
-      const tagClass = tag === "可能利好" ? "ok" : tag === "风险提示" ? "warn" : "info";
-      const href = item.url && /^https?:/i.test(item.url)
-        ? `<a href="${item.url.replace(/"/g, "&quot;")}" target="_blank" rel="noopener">查看原文</a>` : "";
-      return `<article class="result-card"><div class="result-card-title">${escapeHtml(item.title)}</div><div class="chiprow"><span class="chip ${tagClass}">${tag}</span><span class="chip">${escapeHtml(item.time || "时间未知")}</span></div><div class="hint">${escapeHtml(item.content || "无摘要")}</div><div class="hint">${href}</div></article>`;
+    list.innerHTML = visible.map((item, index) => {
+      const tagClass = item.tag === "可能利好" ? "ok" : item.tag === "风险提示" ? "warn" : "info";
+      return `<article class="result-card news-card" data-news-index="${index}" data-news-tag="${escapeHtml(item.tag)}"><div class="result-card-title">${escapeHtml(item.title)}</div><div class="chiprow"><span class="chip ${tagClass}">${escapeHtml(item.tag)}</span><span class="chip">${escapeHtml(item.time || "时间未知")}</span></div><div class="hint">${escapeHtml(item.content || "无摘要")}</div></article>`;
     }).join("");
   }
 
@@ -151,41 +204,130 @@
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
 
-  let newsRows = [];
-  async function loadNews(showAll = false) {
-    const status = $("#newsStatus");
-    if (status) status.textContent = "正在拉取 7×24 快讯…";
-    log("新闻：开始请求东方财富 7×24 快讯接口…");
-    try {
-      const { start, end } = overnightRange();
+  function openNewsDetail(item) {
+    const modal = $("#newsModal");
+    if (!modal || !item) return;
+    const tag = item.tag || "待判断";
+    const tagEl = $("#newsModalTag");
+    tagEl.textContent = tag;
+    tagEl.className = `chip ${tag === "可能利好" ? "ok" : tag === "风险提示" ? "warn" : "info"}`;
+    $("#newsModalTime").textContent = item.time || "时间未知";
+    $("#newsModalTitle").textContent = item.title || "";
+    $("#newsModalBody").textContent = item.content || "暂无摘要";
+    newsModalLink = item.url || "";
+    $("#newsModalOpen").disabled = !/^https?:/i.test(newsModalLink);
+    modal.classList.add("open");
+  }
+
+  function closeNewsDetail() {
+    $("#newsModal")?.classList.remove("open");
+  }
+
+  async function fetchRecentNews(limit = 120, hours = 12) {
+    const { start, end } = recentNewsRange(hours);
+    const pageSize = 80;
+    const maxPages = 20;
+    let sortEnd = "";
+    const seen = new Set();
+    const rows = [];
+    let reachedStart = false;
+
+    for (let page = 0; page < maxPages; page += 1) {
       const payload = await request(API_FEATURE.news, {
         client: "web",
         biz: "web_724",
         fastColumn: 102,
-        sortEnd: "",
-        pageSize: 80,
+        sortEnd,
+        pageSize,
         req_trace: String(Date.now())
       });
-      const parsed = parseNews(payload);
-      newsRows = parsed.filter((item) => {
-        const date = parseTime(item.time);
-        if (!date) return true;
-        return date >= start && date <= end;
-      }).sort((a, b) => (parseTime(b.time)?.getTime() || 0) - (parseTime(a.time)?.getTime() || 0));
-      if (status) status.textContent = `隔夜时段抓到 ${newsRows.length} 条，显示 ${showAll ? newsRows.length : Math.min(newsRows.length, 20)} 条`;
-      renderNews(newsRows, showAll);
+      const data = payload?.data || {};
+      const list = data.fastNewsList || data.list || data.items || [];
+      const raw = Array.isArray(list) ? list : Object.values(list || {});
+      if (!raw.length) break;
+
+      let oldestInPage = null;
+      for (const item of raw) {
+        const parsed = parseNewsItem(item);
+        if (!parsed.title) continue;
+        if (parsed.code) {
+          if (seen.has(parsed.code)) continue;
+          seen.add(parsed.code);
+        }
+        const date = parseTime(parsed.time);
+        if (date) {
+          oldestInPage = oldestInPage == null || date < oldestInPage ? date : oldestInPage;
+          if (date > end) continue;
+          if (date < start) {
+            reachedStart = true;
+            continue;
+          }
+        }
+        rows.push(parsed);
+      }
+
+      const nextSort = String(data.sortEnd || "");
+      if (!nextSort || nextSort === sortEnd) break;
+      sortEnd = nextSort;
+      if (reachedStart) break;
+      if (oldestInPage && oldestInPage < start) break;
+    }
+
+    rows.sort((a, b) => (parseTime(b.time)?.getTime() || 0) - (parseTime(a.time)?.getTime() || 0));
+    return rows.slice(0, limit);
+  }
+
+  async function loadNews() {
+    const status = $("#newsStatus");
+    if (status) status.textContent = "正在拉取近12小时快讯…";
+    log("新闻：开始请求东方财富近12小时快讯…");
+    try {
+      newsRows = await fetchRecentNews(120, 12);
+      const groups = newsGroups(newsRows);
+      if (status) {
+        status.textContent = newsRows.length
+          ? `近12小时共 ${newsRows.length} 条｜可能利好 ${groups["可能利好"].length}｜风险提示 ${groups["风险提示"].length}｜待判断 ${groups["待判断"].length}`
+          : "近12小时暂无快讯";
+      }
+      renderNews(newsRows);
       state.newsLoadedAt = Date.now();
-      log(`新闻：接口返回 ${parsed.length} 条，隔夜时段保留 ${newsRows.length} 条。`);
+      log(`新闻：近12小时保留 ${newsRows.length} 条。`);
     } catch (error) {
       if (status) status.textContent = `新闻获取失败：${error.message}`;
-      renderNews([], false);
+      newsRows = [];
+      renderNews([]);
       log(`新闻获取失败：${error.message}`);
     }
   }
 
   function installNewsEvents() {
-    $("#refreshNewsButton")?.addEventListener("click", () => loadNews(false));
-    $("#newsAllButton")?.addEventListener("click", () => renderNews(newsRows, true));
+    $("#refreshNewsButton")?.addEventListener("click", () => loadNews());
+    $("#newsTabs")?.addEventListener("click", (event) => {
+      const button = event.target.closest("[data-news-category]");
+      if (!button) return;
+      newsCategory = button.getAttribute("data-news-category") || "全部";
+      renderNews(newsRows);
+    });
+    $("#newsList")?.addEventListener("click", (event) => {
+      const card = event.target.closest(".news-card");
+      if (!card) return;
+      const groups = newsGroups(newsRows);
+      const visible = newsCategory === "全部" ? newsRows : groups[newsCategory] || [];
+      const item = visible[Number(card.getAttribute("data-news-index"))];
+      if (item) openNewsDetail(item);
+    });
+    $("#newsModalClose")?.addEventListener("click", closeNewsDetail);
+    $("#newsModal")?.addEventListener("click", (event) => {
+      if (event.target.id === "newsModal") closeNewsDetail();
+    });
+    $("#newsModalOpen")?.addEventListener("click", () => {
+      if (!/^https?:/i.test(newsModalLink)) return;
+      if (typeof AndroidBridge !== "undefined" && AndroidBridge.openUrl) {
+        AndroidBridge.openUrl(newsModalLink);
+      } else {
+        window.open(newsModalLink, "_blank", "noopener");
+      }
+    });
   }
 
   function readFeatureOptions() {
