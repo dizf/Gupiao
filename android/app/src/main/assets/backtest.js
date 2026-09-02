@@ -11,15 +11,19 @@ function btPct(value, digits = 2) {
 }
 
 function btThresholds() {
+  const minEl = document.querySelector("#btPctMin");
+  const maxEl = document.querySelector("#btPctMax");
+  const minPct = minEl ? btNumber(minEl.value) : 3;
+  const maxPct = maxEl ? btNumber(maxEl.value) : 5;
   return {
-    minPct: btNumber(document.querySelector("#btPctMin").value),
-    maxPct: btNumber(document.querySelector("#btPctMax").value),
+    minPct: Number.isFinite(minPct) ? minPct : 3,
+    maxPct: Number.isFinite(maxPct) ? maxPct : 5,
     requireMa: checked("btMaBullish"),
     requireNearHigh: checked("btNearHigh"),
-    nearHigh: Math.max(0.01, Math.min(1, btNumber(document.querySelector("#btNearHighPct").value) / 100)),
+    nearHigh: Math.max(0.01, Math.min(1, btNumber(document.querySelector("#btNearHighPct")?.value) / 100 || 0.97)),
     requireLimitUp: checked("btLimitUp"),
-    limitUpDays: Math.max(1, btNumber(document.querySelector("#btLimitUpDays").value) || 20),
-    minSamples: Math.max(1, btNumber(document.querySelector("#btMinSamples").value) || 1)
+    limitUpDays: Math.max(1, btNumber(document.querySelector("#btLimitUpDays")?.value) || 20),
+    minSamples: Math.max(1, btNumber(document.querySelector("#btMinSamples")?.value) || 1)
   };
 }
 

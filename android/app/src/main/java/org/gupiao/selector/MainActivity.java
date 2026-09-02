@@ -41,11 +41,21 @@ public class MainActivity extends AppCompatActivity {
 
     @Override
     public void onBackPressed() {
-        if (webView.canGoBack()) {
-            webView.goBack();
-        } else {
-            super.onBackPressed();
-        }
+        // 优先交给前端处理新闻二级页 / 详情返回
+        webView.evaluateJavascript(
+                "(function(){try{return !!(window.__appBack&&window.__appBack());}catch(e){return false;}})()",
+                value -> {
+                    if ("true".equals(value)) {
+                        return;
+                    }
+                    runOnUiThread(() -> {
+                        if (webView.canGoBack()) {
+                            webView.goBack();
+                        } else {
+                            MainActivity.super.onBackPressed();
+                        }
+                    });
+                });
     }
 
     @Override

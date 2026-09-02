@@ -1,6 +1,6 @@
 (() => {
   const API_FEATURE = {
-    // np-listapi 的旧 nlist/api/list/get 已返回 404；7x24 现用东财网页端使用的快讯接口。
+    // 东财网页端 7x24 快讯接口
     news: "https://np-weblist.eastmoney.com/comm/web/getFastNewsList",
     quote: "https://push2.eastmoney.com/api/qt/stock/get",
     ulist: "https://push2.eastmoney.com/api/qt/ulist.np/get"
@@ -22,12 +22,15 @@
     newsLoadedAt: 0,
     industryCache: new Map(),
     leaderCache: new Map(),
-    usCache: new Map()
+    usCache: new Map(),
+    newsPageOpen: false,
+    newsDetailOpen: false,
+    ignoreNextPop: false
   };
 
   const $ = (id) => document.querySelector(id);
   const log = (message) => typeof window.logMessage === "function" && window.logMessage(message);
-  const num = (v) => Number.isFinite(Number(v)) ? Number(v) : 0;
+  const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 
   function buildUrl(url, params) {
     return `${url}?${new URLSearchParams(params).toString()}`;
@@ -78,36 +81,72 @@
       const style = document.createElement("style");
       style.id = "newsFeatureStyle";
       style.textContent = `
+        .news-entry{display:flex;align-items:center;gap:10px;width:100%;border:0;background:transparent;padding:0;text-align:left;color:inherit}
+        .news-entry-main{flex:1;min-width:0}
+        .news-entry-title{font-size:15px;font-weight:750;color:#1e3a8a}
+        .news-entry-sub{font-size:11px;color:#667085;margin-top:4px;line-height:1.45}
+        .news-entry-arrow{color:#94a3b8;font-size:18px;flex:0 0 auto}
+        .news-page{position:fixed;inset:0;z-index:70;display:none;flex-direction:column;background:#f4f7fb}
+        .news-page.open{display:flex}
+        .news-page-header{position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:8px;padding:10px 12px;background:rgba(244,247,251,.96);border-bottom:1px solid #e3e8f1}
+        .news-back{min-height:36px;padding:6px 12px;border:1px solid #d6deea;border-radius:10px;background:#fff;color:#334155;font-weight:650}
+        .news-page-title{flex:1;min-width:0;font-size:15px;font-weight:750;color:#1e3a8a}
+        .news-page-body{flex:1;overflow:auto;-webkit-overflow-scrolling:touch;padding:12px}
         .news-tabs{display:flex;gap:6px;flex-wrap:wrap;margin:8px 0}
         .news-tab{border:1px solid #d0d7e2;background:#fff;color:#344054;border-radius:999px;padding:6px 12px;font-size:12px;min-height:32px}
         .news-tab.active{background:#1d4ed8;border-color:#1d4ed8;color:#fff}
         .news-card{cursor:pointer}
-        .news-modal{position:fixed;inset:0;z-index:80;display:none;align-items:flex-end;justify-content:center;background:rgba(15,23,42,.45);padding:16px}
+        .news-modal{position:fixed;inset:0;z-index:90;display:none;align-items:flex-end;justify-content:center;background:rgba(15,23,42,.45);padding:16px}
         .news-modal.open{display:flex}
         .news-modal-card{width:min(640px,100%);max-height:78vh;overflow:auto;background:#fff;border-radius:18px;padding:16px;box-shadow:0 18px 40px rgba(15,23,42,.28)}
         .news-modal-title{font-size:16px;font-weight:700;line-height:1.45;margin:8px 0}
         .news-modal-body{white-space:pre-wrap;font-size:13px;line-height:1.6;color:#334155}
         .news-modal-actions{display:flex;gap:8px;margin-top:14px}
+        body.news-lock{overflow:hidden}
       `;
       document.head.appendChild(style);
     }
 
-    if (!$("#newsSection")) {
+    if (!$("#newsEntrySection")) {
       const section = document.createElement("details");
-      section.id = "newsSection";
+      section.id = "newsEntrySection";
       section.className = "section";
       section.open = false;
       section.innerHTML = `
-        <summary>③ 近期新闻 <span class="summary-note">近12小时 · 关键词提示</span></summary>
-        <div class="content">
-          <div class="help">默认查看近12小时快讯。标签只是关键词辅助，不代表确定的利好或利空。点击条目可查看详情。</div>
-          <div class="actions"><button id="refreshNewsButton">刷新近12小时新闻</button></div>
+        <summary>
+          <button type="button" id="openNewsPageButton" class="news-entry">
+            <span class="news-entry-main">
+              <span class="news-entry-title">近期新闻</span>
+              <span id="newsEntryHint" class="news-entry-sub">近12小时快讯 · 点击进入独立页面</span>
+            </span>
+            <span class="news-entry-arrow">›</span>
+          </button>
+        </summary>`;
+      const anchor = [...document.querySelectorAll("details.section")].find((el) => el.textContent.includes("T+1 次日开盘回测"));
+      (anchor?.parentElement || document.body).insertBefore(section, anchor || null);
+      // 入口卡片本身不展开内容，点击直接进二级页
+      section.addEventListener("toggle", () => {
+        if (section.open) section.open = false;
+      });
+    }
+
+    if (!$("#newsPage")) {
+      const page = document.createElement("div");
+      page.id = "newsPage";
+      page.className = "news-page";
+      page.innerHTML = `
+        <div class="news-page-header">
+          <button type="button" id="newsBackButton" class="news-back">← 返回</button>
+          <div class="news-page-title">近12小时新闻</div>
+          <button type="button" id="refreshNewsButton" class="news-back">刷新</button>
+        </div>
+        <div class="news-page-body">
+          <div class="help">标签只是关键词辅助，不代表确定的利好或利空。点击条目可查看详情；可点返回，或从左缘右滑返回。</div>
           <div id="newsStatus" class="hint">等待加载…</div>
           <div id="newsTabs" class="news-tabs"></div>
           <div id="newsList" class="result-cards"><div class="empty">暂无新闻</div></div>
         </div>`;
-      const anchor = [...document.querySelectorAll("details.section")].find((el) => el.textContent.includes("T+1 次日开盘回测"));
-      (anchor?.parentElement || document.body).insertBefore(section, anchor || null);
+      document.body.appendChild(page);
     }
 
     if (!$("#newsModal")) {
@@ -165,12 +204,23 @@
   let newsModalLink = "";
 
   function newsGroups(rows) {
-    const groups = { "全部": [...rows], "可能利好": [], "风险提示": [], "待判断": [] };
+    const groups = { 全部: [...rows], 可能利好: [], 风险提示: [], 待判断: [] };
     for (const item of rows) {
       const tag = NEWS_CATEGORIES.includes(item.tag) ? item.tag : "待判断";
       groups[tag].push(item);
     }
     return groups;
+  }
+
+  function updateEntryHint(rows) {
+    const hint = $("#newsEntryHint");
+    if (!hint) return;
+    if (!rows.length) {
+      hint.textContent = "近12小时快讯 · 点击进入独立页面";
+      return;
+    }
+    const groups = newsGroups(rows);
+    hint.textContent = `近12小时 ${rows.length} 条｜利好 ${groups["可能利好"].length}｜风险 ${groups["风险提示"].length} · 点击进入`;
   }
 
   function renderNewsTabs(rows) {
@@ -190,6 +240,7 @@
     const groups = newsGroups(rows);
     const visible = newsCategory === "全部" ? rows : groups[newsCategory] || [];
     renderNewsTabs(rows);
+    updateEntryHint(rows);
     if (!visible.length) {
       list.innerHTML = '<div class="empty">近12小时没有抓到可解析的快讯。</div>';
       return;
@@ -201,7 +252,13 @@
   }
 
   function escapeHtml(value) {
-    return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
+    return String(value ?? "").replace(/[&<>"']/g, (c) => ({
+      "&": "&amp;",
+      "<": "&lt;",
+      ">": "&gt;",
+      '"': "&quot;",
+      "'": "&#39;"
+    }[c]));
   }
 
   function openNewsDetail(item) {
@@ -217,11 +274,56 @@
     newsModalLink = item.url || "";
     $("#newsModalOpen").disabled = !/^https?:/i.test(newsModalLink);
     modal.classList.add("open");
+    state.newsDetailOpen = true;
   }
 
   function closeNewsDetail() {
     $("#newsModal")?.classList.remove("open");
+    state.newsDetailOpen = false;
   }
+
+  function openNewsPage() {
+    const page = $("#newsPage");
+    if (!page) return;
+    page.classList.add("open");
+    document.body.classList.add("news-lock");
+    if (!state.newsPageOpen) {
+      state.newsPageOpen = true;
+      history.pushState({ newsPage: true }, "", "#news");
+    }
+    if (!newsRows.length || Date.now() - state.newsLoadedAt > 5 * 60 * 1000) {
+      loadNews();
+    } else {
+      renderNews(newsRows);
+    }
+  }
+
+  function closeNewsPage(fromPopstate = false) {
+    closeNewsDetail();
+    const page = $("#newsPage");
+    page?.classList.remove("open");
+    document.body.classList.remove("news-lock");
+    if (!state.newsPageOpen) return;
+    state.newsPageOpen = false;
+    if (!fromPopstate && history.state && history.state.newsPage) {
+      state.ignoreNextPop = true;
+      history.back();
+    }
+  }
+
+  function handleAppBack() {
+    if (state.newsDetailOpen) {
+      closeNewsDetail();
+      return true;
+    }
+    if (state.newsPageOpen) {
+      closeNewsPage(false);
+      return true;
+    }
+    return false;
+  }
+
+  window.__appBack = handleAppBack;
 
   async function fetchRecentNews(limit = 120, hours = 12) {
     const { start, end } = recentNewsRange(hours);
@@ -236,9 +338,9 @@
       const payload = await request(API_FEATURE.news, {
         client: "web",
         biz: "web_724",
-        fastColumn: 102,
+        fastColumn: "102",
         sortEnd,
-        pageSize,
+        pageSize: String(pageSize),
         req_trace: String(Date.now())
       });
       const data = payload?.data || {};
@@ -300,7 +402,39 @@
     }
   }
 
+  function installSwipeBack() {
+    const page = $("#newsPage");
+    if (!page || page.dataset.swipeReady) return;
+    page.dataset.swipeReady = "1";
+    let startX = 0;
+    let startY = 0;
+    let tracking = false;
+    page.addEventListener("touchstart", (event) => {
+      if (!state.newsPageOpen || !event.touches.length) return;
+      const touch = event.touches[0];
+      if (touch.clientX > 28) return;
+      startX = touch.clientX;
+      startY = touch.clientY;
+      tracking = true;
+    }, { passive: true });
+    page.addEventListener("touchend", (event) => {
+      if (!tracking) return;
+      tracking = false;
+      const touch = event.changedTouches[0];
+      if (!touch) return;
+      const dx = touch.clientX - startX;
+      const dy = Math.abs(touch.clientY - startY);
+      if (dx > 80 && dy < 60) handleAppBack();
+    }, { passive: true });
+  }
+
   function installNewsEvents() {
+    $("#openNewsPageButton")?.addEventListener("click", (event) => {
+      event.preventDefault();
+      event.stopPropagation();
+      openNewsPage();
+    });
+    $("#newsBackButton")?.addEventListener("click", () => closeNewsPage(false));
     $("#refreshNewsButton")?.addEventListener("click", () => loadNews());
     $("#newsTabs")?.addEventListener("click", (event) => {
       const button = event.target.closest("[data-news-category]");
@@ -322,12 +456,21 @@
     });
     $("#newsModalOpen")?.addEventListener("click", () => {
       if (!/^https?:/i.test(newsModalLink)) return;
-      if (typeof AndroidBridge !== "undefined" && AndroidBridge.openUrl) {
-        AndroidBridge.openUrl(newsModalLink);
-      } else {
-        window.open(newsModalLink, "_blank", "noopener");
-      }
+      window.open(newsModalLink, "_blank", "noopener");
     });
+    window.addEventListener("popstate", () => {
+      if (state.ignoreNextPop) {
+        state.ignoreNextPop = false;
+        return;
+      }
+      if (state.newsDetailOpen) {
+        closeNewsDetail();
+        if (state.newsPageOpen) history.pushState({ newsPage: true }, "", "#news");
+        return;
+      }
+      if (state.newsPageOpen) closeNewsPage(true);
+    });
+    installSwipeBack();
   }
 
   function readFeatureOptions() {
@@ -441,5 +584,6 @@
   injectUi();
   readFeatureOptions();
   installNewsEvents();
-  loadNews(false);
+  // 预取摘要，不自动打开二级页
+  loadNews();
 })();
