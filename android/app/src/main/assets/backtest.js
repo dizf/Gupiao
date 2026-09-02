@@ -90,17 +90,39 @@ function btRenderSummary(items, samples) {
   box.innerHTML = `<div class="results-scroll"><table><thead><tr>${head}</tr></thead><tbody>${body}</tbody></table></div>${latestHtml}`;
 }
 
+function btStop(tokenValue) {
+  if (!tokenValue) return;
+  tokenValue.stopped = true;
+  const ids = [...(tokenValue.ids || [])];
+  ids.forEach((id) => {
+    // 先把 JS 侧 Promise 结束掉，再通知 Android 取消网络 Call。
+    // 这样即使 cancel 与 MarketBridge.put() 存在毫秒级竞态，也不会把回测卡死。
+    const request = state.pending?.get(id);
+    if (request) {
+      state.pending.delete(id);
+      request.token?.ids.delete(id);
+      request.reject(new Error("分析已停止"));
+    }
+    if (window.MarketAPI) window.MarketAPI.cancel(id);
+  });
+  tokenValue.ids.clear();
+}
+
 async function runT1Backtest() {
   const button = document.querySelector("#backtestButton");
   if (window.__backtestToken) {
-    stopToken(window.__backtestToken);
+    btStop(window.__backtestToken);
     setStatus("正在停止 T+1 回测...");
+    logMessage("T+1 回测：已发出停止请求。");
     return;
   }
   const tokenValue = token();
   window.__backtestToken = tokenValue;
   button.textContent = "停止回测";
   setStatus("正在进行 T+1 历史回测...");
+  clearLog();
+  logMessage("===== 开始 T+1 历史回测 =====");
+  logMessage("规则：只使用触发日及以前的历史日K线；次日数据仅用于统计结果。");
   const options = btThresholds();
   const limit = Math.max(1, btNumber(document.querySelector("#btStockLimit").value) || 20);
   try {
@@ -110,24 +132,37 @@ async function runT1Backtest() {
       targets = codeText.split(/[ ,，\n]+/).filter(Boolean).map((code) => ({
         code: code.padStart(6, "0"), name: ""
       }));
+      logMessage(`已指定 ${targets.length} 只股票：${targets.map((x) => x.code).join("、")}`);
     } else if (state.screenRows.length) {
       targets = state.screenRows.slice(0, limit).map((row) => ({ code: row.代码, name: row.名称 }));
+      logMessage(`使用当前选股结果前 ${targets.length} 只作为历史样本池。`);
     } else {
       logMessage("未填写股票代码，也没有当前选股结果；先拉取活跃股票作为历史样本池...");
       const spot = await fetchSpot(tokenValue);
+      check(tokenValue);
       targets = spot.sort((a, b) => b.amount - a.amount).slice(0, limit).map((row) => ({ code: row.code, name: row.name }));
+      logMessage(`活跃股票样本池准备完成：${targets.length} 只。`);
     }
     if (!targets.length) throw new Error("没有可回测的股票");
-    logMessage(`T+1 回测股票 ${targets.length} 只；只使用历史日K线，不回填历史主力净流入/换手率/热点板块。`);
+    logMessage(`T+1 回测股票 ${targets.length} 只；每只读取最多 ${BACKTEST_DEFAULT_LOOKBACK} 根日K线。`);
     const allSamples = [];
     const summaries = [];
+    let finished = 0;
     await mapLimit(targets, 4, async (target) => {
+      check(tokenValue);
+      logMessage(`回测 ${finished + 1}/${targets.length}：${target.code}${target.name ? ` ${target.name}` : ""}，正在读取历史K线...`);
       const history = await fetchKline(target.code, tokenValue);
+      check(tokenValue);
+      logMessage(`   ${target.code}：取得 ${history.length} 个交易日，正在计算历史触发样本...`);
       const samples = btAnalyzeHistory(history, target.code, target.name, options);
       samples.forEach((x) => allSamples.push({ ...x, 代码: target.code, 名称: target.name }));
+      finished += 1;
+      logMessage(`   ${target.code}：命中 ${samples.length} 个历史触发样本；进度 ${finished}/${targets.length}。`);
       if (samples.length >= options.minSamples) {
         const summary = btSummary(samples);
         summaries.push({ 代码: target.code, 名称: target.name, ...summary });
+      } else {
+        logMessage(`   ${target.code}：样本少于最低要求 ${options.minSamples}，不计入单股汇总。`);
       }
       return true;
     }, tokenValue);
@@ -144,6 +179,9 @@ async function runT1Backtest() {
     if (!tokenValue.stopped) {
       logMessage(`T+1 回测失败：${error.message}`);
       setStatus(`T+1 回测失败：${error.message}`);
+    } else {
+      logMessage("T+1 回测已停止。");
+      setStatus("T+1 回测已停止");
     }
   } finally {
     window.__backtestToken = null;
