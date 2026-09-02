@@ -108,26 +108,20 @@
     }
 
     if (!$("#newsEntrySection")) {
-      const section = document.createElement("details");
+      const section = document.createElement("div");
       section.id = "newsEntrySection";
       section.className = "section";
-      section.open = false;
+      section.style.padding = "14px";
       section.innerHTML = `
-        <summary>
-          <button type="button" id="openNewsPageButton" class="news-entry">
-            <span class="news-entry-main">
-              <span class="news-entry-title">近期新闻</span>
-              <span id="newsEntryHint" class="news-entry-sub">近12小时快讯 · 点击进入独立页面</span>
-            </span>
-            <span class="news-entry-arrow">›</span>
-          </button>
-        </summary>`;
+        <button type="button" id="openNewsPageButton" class="news-entry">
+          <span class="news-entry-main">
+            <span class="news-entry-title">近期新闻</span>
+            <span id="newsEntryHint" class="news-entry-sub">近12小时快讯</span>
+          </span>
+          <span class="news-entry-arrow">›</span>
+        </button>`;
       const anchor = [...document.querySelectorAll("details.section")].find((el) => el.textContent.includes("T+1 次日开盘回测"));
       (anchor?.parentElement || document.body).insertBefore(section, anchor || null);
-      // 入口卡片本身不展开内容，点击直接进二级页
-      section.addEventListener("toggle", () => {
-        if (section.open) section.open = false;
-      });
     }
 
     if (!$("#newsPage")) {
@@ -216,11 +210,11 @@
     const hint = $("#newsEntryHint");
     if (!hint) return;
     if (!rows.length) {
-      hint.textContent = "近12小时快讯 · 点击进入独立页面";
+      hint.textContent = "近12小时快讯";
       return;
     }
     const groups = newsGroups(rows);
-    hint.textContent = `近12小时 ${rows.length} 条｜利好 ${groups["可能利好"].length}｜风险 ${groups["风险提示"].length} · 点击进入`;
+    hint.textContent = `近12小时 ${rows.length} 条｜利好 ${groups["可能利好"].length}｜风险 ${groups["风险提示"].length}`;
   }
 
   function renderNewsTabs(rows) {
