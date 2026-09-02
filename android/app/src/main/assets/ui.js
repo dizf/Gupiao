@@ -10,6 +10,7 @@
   const log = $("#log");
   const results = $("#results");
   const resultBadge = $("#resultBadge");
+  const LOG_STORAGE_KEY = "gupiao_runtime_log_v1";
 
   function taskButtons() { return [screenBtn, monitorBtn, similarBtn, backtestBtn].filter(Boolean); }
   function runningButton(btn) { return /停止/.test(btn?.textContent || ""); }
@@ -44,6 +45,49 @@
     return String(value ?? "").replace(/[&<>"']/g, (c) => ({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c]));
   }
 
+  function persistLog() {
+    if (!log) return;
+    try {
+      const text = log.textContent || "";
+      if (text.trim()) localStorage.setItem(LOG_STORAGE_KEY, text);
+      else localStorage.removeItem(LOG_STORAGE_KEY);
+    } catch (_) {}
+  }
+
+  function restoreLog() {
+    if (!log) return;
+    try {
+      const saved = localStorage.getItem(LOG_STORAGE_KEY);
+      if (saved && saved.trim()) log.textContent = saved;
+    } catch (_) {}
+  }
+
+  function copyRuntimeLog(button) {
+    const text = log?.textContent?.trim() || "暂无运行日志";
+    const done = () => {
+      const old = button.textContent;
+      button.textContent = "已复制日志";
+      setTimeout(() => { button.textContent = old; }, 1200);
+    };
+    if (navigator.clipboard?.writeText) {
+      navigator.clipboard.writeText(text).then(done).catch(() => fallbackCopy(text, done));
+    } else {
+      fallbackCopy(text, done);
+    }
+  }
+
+  function fallbackCopy(text, done) {
+    const area = document.createElement("textarea");
+    area.value = text;
+    area.style.position = "fixed";
+    area.style.opacity = "0";
+    document.body.appendChild(area);
+    area.focus();
+    area.select();
+    try { document.execCommand("copy"); done(); } catch (_) {}
+    area.remove();
+  }
+
   let renderingLog = false;
   let logObserver = null;
   function highlightLog() {
@@ -57,7 +101,7 @@
         let cls = "info";
         if (/排除|关闭|没有|不足|停止/.test(line)) cls = "warn";
         if (/失败|错误/.test(line)) cls = "error";
-        if (/完成|成功|剩余 \d+ 只|合计：/.test(line)) cls = "ok";
+        if (/完成|成功|剩余 \d+ 只|合计：|进度 \d+\/\d+/.test(line)) cls = "ok";
         if (index === lines.length - 1) cls += " latest";
         return `<div class="logline ${cls}">${escapeHtml(line)}</div>`;
       }).join("");
@@ -66,6 +110,7 @@
       if (logObserver) logObserver.observe(log, { childList: true, characterData: true, subtree: true });
     }
     log.scrollTop = log.scrollHeight;
+    persistLog();
   }
 
   function updateResultBadge() {
@@ -82,9 +127,30 @@
     if (section) section.open = true;
     setTimeout(() => log?.scrollIntoView({ behavior: "smooth", block: "center" }), 30);
   });
+
+  // 在运行日志标题旁增加“复制日志”，下次遇到问题可直接复制后粘贴到聊天里。
+  const logSection = $("#logSection");
+  if (logSection && !$("#copyLogButton")) {
+    const summary = logSection.querySelector("summary");
+    if (summary) {
+      const button = document.createElement("button");
+      button.id = "copyLogButton";
+      button.type = "button";
+      button.textContent = "复制日志";
+      button.style.cssText = "margin-left:auto;border:0;border-radius:8px;padding:5px 8px;background:#eef3ff;color:#3157a6;font-size:11px;font-weight:650";
+      button.addEventListener("click", (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        copyRuntimeLog(button);
+      });
+      summary.appendChild(button);
+    }
+  }
+
   const exportSimilar = $("#exportButton2");
   if (exportSimilar) exportSimilar.addEventListener("click", () => window.saveResult?.());
 
+  restoreLog();
   if (status) new MutationObserver(decorateStatus).observe(status, { childList: true, characterData: true, subtree: true });
   if (log) {
     logObserver = new MutationObserver(() => {
