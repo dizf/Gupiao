@@ -21,13 +21,8 @@
         button.secondary { background: #64748b; box-shadow: 0 2px 5px #cbd5e1; }
         .actions { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; margin-top: 14px; }
         #status { font-size: 13px; color: #2563eb; min-height: 18px; margin-bottom: 8px; font-weight: 600; }
-        #log {
-            max-height: 180px; overflow: auto; white-space: pre-wrap;
-            color: #334155; font-size: 12px; line-height: 1.45;
-            background: #f8fafc; border: 1px solid #e6eaf0; border-radius: 9px; padding: 9px;
-            min-height: 72px;
-        }
-        #results { font-size: 11px; }
+        #log { max-height: 180px; overflow: auto; white-space: pre-wrap; color: #334155; font-size: 12px; line-height: 1.45; background: #f8fafc; border: 1px solid #e6eaf0; border-radius: 9px; padding: 9px; min-height: 72px; }
+        #results, #backtestSummary { font-size: 11px; }
         .result-cards { display: grid; gap: 10px; }
         .result-card { border: 1px solid #dbe4f0; border-radius: 10px; padding: 10px; background: #fbfdff; }
         .result-card-title { color: #1e3a8a; font-size: 14px; font-weight: 700; margin-bottom: 8px; }
@@ -43,17 +38,9 @@
         th, td { border-bottom: 1px solid #e6eaf0; padding: 6px; text-align: left; white-space: nowrap; }
         th { background: #eef3ff; color: #334155; position: sticky; top: 0; }
         .hint { color: #667085; font-size: 11px; margin-top: 7px; }
-        @media (max-width: 360px) {
-            body { padding-left: 10px; padding-right: 10px; }
-            section { padding: 12px; }
-            .grid { gap: 7px; }
-        }
-        @media (min-width: 700px) {
-            .result-cards { display: none; }
-        }
-        @media (max-width: 699px) {
-            .results-scroll { display: none; }
-        }
+        @media (max-width: 360px) { body { padding-left: 10px; padding-right: 10px; } section { padding: 12px; } .grid { gap: 7px; } }
+        @media (min-width: 700px) { .result-cards { display: none; } }
+        @media (max-width: 699px) { .results-scroll { display: none; } }
     </style>
 </head>
 <body>
@@ -61,102 +48,65 @@
     <section>
         <h2>基础条件</h2>
         <label class="check"><input id="enablePct" type="checkbox" checked>涨幅 (%)</label>
-        <div class="grid">
-            <label>最小值<input id="pctMin" type="number" value="3" step="0.1"></label>
-            <label>最大值<input id="pctMax" type="number" value="5" step="0.1"></label>
-        </div>
+        <div class="grid"><label>最小值<input id="pctMin" type="number" value="3" step="0.1"></label><label>最大值<input id="pctMax" type="number" value="5" step="0.1"></label></div>
         <label class="check"><input id="enableTurnover" type="checkbox" checked>换手率 (%)</label>
-        <div class="grid">
-            <label>最小值<input id="turnoverMin" type="number" value="5" step="0.1"></label>
-            <label>最大值<input id="turnoverMax" type="number" value="10" step="0.1"></label>
-        </div>
+        <div class="grid"><label>最小值<input id="turnoverMin" type="number" value="5" step="0.1"></label><label>最大值<input id="turnoverMax" type="number" value="10" step="0.1"></label></div>
         <label class="check"><input id="enableVolumeRatio" type="checkbox" checked>量比</label>
-        <div class="grid">
-            <label>最小值<input id="volumeRatioMin" type="number" value="1.5" step="0.1"></label>
-            <label>最大值（可空）<input id="volumeRatioMax" type="number" step="0.1" placeholder="留空"></label>
-        </div>
+        <div class="grid"><label>最小值<input id="volumeRatioMin" type="number" value="1.5" step="0.1"></label><label>最大值（可空）<input id="volumeRatioMax" type="number" step="0.1" placeholder="留空"></label></div>
         <label class="check"><input id="enableCircMv" type="checkbox" checked>流通市值 (亿)</label>
-        <div class="grid">
-            <label>最小值<input id="circMvMin" type="number" value="50" step="1"></label>
-            <label>最大值<input id="circMvMax" type="number" value="200" step="1"></label>
-        </div>
+        <div class="grid"><label>最小值<input id="circMvMin" type="number" value="50" step="1"></label><label>最大值<input id="circMvMax" type="number" value="200" step="1"></label></div>
         <label class="check"><input id="enableProfitable" type="checkbox" checked>盈利企业（动态市盈率 &gt; 0）</label>
         <label class="check"><input id="enableMainInflow" type="checkbox" checked>主力净流入 &gt; 0</label>
     </section>
     <section>
         <h2>技术条件</h2>
         <label class="check"><input id="enableHotBoard" type="checkbox" checked>热点板块筛选</label>
-        <div class="grid">
-            <label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label>
-            <label>实时刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label>
-        </div>
+        <div class="grid"><label>前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label><label>实时刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label></div>
         <label class="check"><input id="enableLhbCount" type="checkbox">近一年龙虎榜次数大于</label>
-        <div class="grid">
-            <label>上榜次数<input id="lhbCountMin" type="number" value="10" min="0"></label>
-            <label>统计周期<input type="text" value="近一年" readonly></label>
-        </div>
+        <div class="grid"><label>上榜次数<input id="lhbCountMin" type="number" value="10" min="0"></label><label>统计周期<input type="text" value="近一年" readonly></label></div>
         <label class="check"><input id="enableLimitUp" type="checkbox">近 N 日有涨停</label>
-        <div class="grid">
-            <label>交易日<input id="limitUpLookback" type="number" value="20" min="1"></label>
-            <label>放量交易日<input id="volumeStairDays" type="number" value="5" min="2"></label>
-        </div>
+        <div class="grid"><label>交易日<input id="limitUpLookback" type="number" value="20" min="1"></label><label>放量交易日<input id="volumeStairDays" type="number" value="5" min="2"></label></div>
         <label class="check"><input id="enableVolumeStair" type="checkbox">台阶式持续放量</label>
         <label class="check"><input id="enableMaBullish" type="checkbox">5/10/20/60 日均线多头向上</label>
         <label class="check"><input id="enableMa5Bias" type="checkbox">不远离 5 日均线</label>
-        <div class="grid">
-            <label>最大偏离 %<input id="maxMa5Bias" type="number" value="7" step="0.1"></label>
-            <label>平台回看交易日<input id="platformLookback" type="number" value="15" min="1"></label>
-        </div>
+        <div class="grid"><label>最大偏离 %<input id="maxMa5Bias" type="number" value="7" step="0.1"></label><label>平台回看交易日<input id="platformLookback" type="number" value="15" min="1"></label></div>
         <label class="check"><input id="enablePlatform" type="checkbox">未跌破平台支撑</label>
         <label class="check"><input id="enableNearHigh" type="checkbox">接近近 20 日高点</label>
-        <div class="grid">
-            <label>高点下限 %<input id="near20dHigh" type="number" value="97" step="0.1"></label>
-            <label>跳过开盘分时<input id="skipOpenMinutes" type="number" value="5" min="0"></label>
-        </div>
+        <div class="grid"><label>高点下限 %<input id="near20dHigh" type="number" value="97" step="0.1"></label><label>跳过开盘分时<input id="skipOpenMinutes" type="number" value="5" min="0"></label></div>
         <label class="check"><input id="enableVwap" type="checkbox">分时运行在均价线上方</label>
-        <div class="grid">
-            <label>水上比例 %<input id="aboveVwapRatio" type="number" value="100" step="1" min="1" max="100"></label>
-            <label>急拉分钟窗口<input id="rapidWindow" type="number" value="5" min="1"></label>
-        </div>
+        <div class="grid"><label>水上比例 %<input id="aboveVwapRatio" type="number" value="100" step="1" min="1" max="100"></label><label>急拉分钟窗口<input id="rapidWindow" type="number" value="5" min="1"></label></div>
         <label class="check"><input id="enableStrongerThanIndex" type="checkbox" checked>走势强于上证指数</label>
         <label class="check"><input id="enableTailHigh" type="checkbox" checked>14:30 后创当日新高</label>
         <label class="check"><input id="enableRapidRise" type="checkbox" checked>分时急速拉升</label>
-        <div class="grid">
-            <label>急拉最小涨幅 %<input id="rapidPct" type="number" value="2" step="0.1"></label>
-            <label>急拉最小放量<input id="rapidVolume" type="number" value="1.5" step="0.1"></label>
-        </div>
-        <div class="actions">
-            <button id="screenButton">开始选股</button>
-            <button id="monitorButton" class="secondary">实时监控</button>
-        </div>
+        <div class="grid"><label>急拉最小涨幅 %<input id="rapidPct" type="number" value="2" step="0.1"></label><label>急拉最小放量<input id="rapidVolume" type="number" value="1.5" step="0.1"></label></div>
+        <div class="actions"><button id="screenButton">开始选股</button><button id="monitorButton" class="secondary">实时监控</button></div>
         <label class="check"><input id="enableNotify" type="checkbox" checked>命中实时监控条件时发出提醒铃声</label>
         <div class="hint">实时监控：基础条件 + 主力净流入 ≥ 1000 万 + 急速拉升，默认每 15 秒刷新。</div>
     </section>
     <section>
+        <h2>T+1 次日开盘回测</h2>
+        <div class="hint">目标：验证“昨晚筛出的股票，第二天是否真的更容易高开”。回测只使用触发日及以前的日K线，次日开盘/最高/收盘仅作为结果，不参与筛选。</div>
+        <label class="check"><input id="btMaBullish" type="checkbox">历史样本要求 5/10/20/60 均线多头</label>
+        <label class="check"><input id="btNearHigh" type="checkbox">历史样本要求接近 20 日高点</label>
+        <div class="grid"><label>高点下限 %<input id="btNearHighPct" type="number" value="97" step="0.1"></label><label>历史样本最少次数<input id="btMinSamples" type="number" value="1" min="1"></label></div>
+        <label class="check"><input id="btLimitUp" type="checkbox">历史样本要求近 N 日有涨停</label>
+        <div class="grid"><label>N 个交易日<input id="btLimitUpDays" type="number" value="20" min="1"></label><label>最多回测股票数<input id="btStockLimit" type="number" value="20" min="1"></label></div>
+        <label>指定股票代码（可空，多个用空格/逗号/换行分隔）<input id="btCodes" placeholder="例如 002251 000681"></label>
+        <div class="actions"><button id="backtestButton">开始 T+1 回测</button><button id="exportButton" class="secondary">导出结果</button></div>
+        <div class="hint">如果未填写代码：优先回测当前选股结果；否则取成交额靠前的股票作为样本池。换手率、量比、主力净流入、热点板块等实时字段不会被伪造为历史数据。</div>
+        <div id="backtestSummary">暂无回测结果</div>
+    </section>
+    <section>
         <h2>相似走势分析</h2>
-        <div class="grid">
-            <label>股票代码<input id="similarCode" inputmode="numeric" placeholder="例如 000681"></label>
-            <label>匹配窗口
-                <select id="similarWindow"><option>全部</option><option>5</option><option>10</option><option>20</option><option>60</option></select>
-            </label>
-            <label>候选数量（0=全部）<input id="similarLimit" type="number" value="300" min="0"></label>
-            <label>每窗口返回<input id="similarTopN" type="number" value="10" min="1"></label>
-        </div>
-        <div class="actions">
-            <button id="similarButton">开始分析</button>
-            <button id="exportButton" class="secondary">导出结果</button>
-        </div>
+        <div class="grid"><label>股票代码<input id="similarCode" inputmode="numeric" placeholder="例如 000681"></label><label>匹配窗口<select id="similarWindow"><option>全部</option><option>5</option><option>10</option><option>20</option><option>60</option></select></label><label>候选数量（0=全部）<input id="similarLimit" type="number" value="300" min="0"></label><label>每窗口返回<input id="similarTopN" type="number" value="10" min="1"></label></div>
+        <div class="actions"><button id="similarButton">开始分析</button><button id="exportButton2" class="secondary">导出相似结果</button></div>
         <div class="hint">相似结果会在每只候选完成后实时更新，分析过程中可停止。</div>
     </section>
     <section>
-        <h2>运行日志</h2>
-        <div id="status">就绪</div>
-        <div id="log">等待开始...</div>
+        <h2>运行日志</h2><div id="status">就绪</div><div id="log">等待开始...</div>
     </section>
-    <section>
-        <h2>结果</h2>
-        <div id="results">暂无结果</div>
-    </section>
+    <section><h2>结果</h2><div id="results">暂无结果</div></section>
     <script src="app.js"></script>
+    <script src="backtest.js"></script>
 </body>
 </html>
