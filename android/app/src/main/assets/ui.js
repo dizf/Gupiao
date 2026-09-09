@@ -12,13 +12,17 @@
   const resultBadge = $("#resultBadge");
   const LOG_STORAGE_KEY = "gupiao_runtime_log_v1";
 
-  function taskButtons() { return [screenBtn, monitorBtn, similarBtn, backtestBtn].filter(Boolean); }
+  function taskButtons() { return [screenBtn, monitorBtn, similarBtn, backtestBtn, $("#gapOneButton"), $("#gapScanButton")].filter(Boolean); }
   function runningButton(btn) { return /停止/.test(btn?.textContent || ""); }
 
   function stopAll() {
     const running = taskButtons().filter(runningButton);
     running.forEach((btn) => btn.click());
-    if (!running.length && window.__backtestToken && typeof stopToken === "function") stopToken(window.__backtestToken);
+    if (!running.length && typeof stopToken === "function") {
+      if (window.__backtestToken) stopToken(window.__backtestToken);
+      if (window.__gapToken) stopToken(window.__gapToken);
+      if (window.__gapScanToken) stopToken(window.__gapScanToken);
+    }
     setTimeout(refreshState, 80);
   }
 
@@ -35,7 +39,7 @@
   function decorateStatus() {
     if (!status || !dot) return;
     const text = status.textContent || "";
-    const running = /正在|分析中|监控中|回测中/.test(text);
+    const running = /正在|分析中|监控中|回测中|扫描/.test(text);
     const error = /失败|错误/.test(text);
     dot.className = `dot ${running ? "running" : error ? "error" : /完成|停止|就绪|已保存/.test(text) ? "success" : ""}`;
     refreshState();

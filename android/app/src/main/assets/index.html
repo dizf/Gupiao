@@ -55,7 +55,7 @@
 <details class="section">
 <summary>③ T+1 次日开盘回测 <span class="summary-note">验证高开概率</span></summary>
 <div class="content">
-  <div class="help">这个功能回答“昨晚筛出的股票，第二天是否更容易高开”。历史回测严格按时间顺序计算，次日开盘数据只用于结果统计。</div>
+  <div class="help">次日高开概率：先用该股自己最像今天的历史日估计明天高开，再用其他活跃股的相似日做市场确认。两套接近更可信。取不到日K会提示停牌、退市或接口失败，而不是笼统说样本不足。全盘扫描仍只按本股计算，避免过慢。</div>
   <div class="chiprow"><span class="chip">高开率</span><span class="chip">≥1%高开</span><span class="chip">≥2%高开</span><span class="chip">平均开盘</span><span class="chip">平均最高</span></div>
   <div class="grid"><label class="field">回测涨幅最小值 %<input id="btPctMin" type="number" value="3" step="0.1"></label><label class="field">回测涨幅最大值 %<input id="btPctMax" type="number" value="5" step="0.1"></label></div>
   <label class="check"><input id="btMaBullish" type="checkbox">历史样本要求均线多头</label>
@@ -64,8 +64,9 @@
   <label class="check"><input id="btLimitUp" type="checkbox">历史样本要求近 N 日涨停</label>
   <div class="grid"><label class="field">N 个交易日<input id="btLimitUpDays" type="number" value="20" min="1"></label><label class="field">最多回测股票数<input id="btStockLimit" type="number" value="20" min="1"></label></div>
   <label class="field">指定股票代码（可空）<input id="btCodes" placeholder="例如 002251 000681，可多个"></label>
-  <div class="actions"><button id="backtestButton">开始 T+1 回测</button><button id="exportButton" class="secondary">导出结果</button></div>
-  <div class="hint">未填写代码时：优先回测当前选股结果；没有选股结果时取成交额靠前股票。不会伪造历史主力净流入、换手率或热点板块。</div>
+  <div class="actions"><button id="backtestButton">开始 T+1 回测</button><button id="gapOneButton">计算高开概率</button></div>
+  <div class="actions"><button id="gapScanButton">全盘扫描前十</button><button id="exportButton" class="secondary">导出结果</button></div>
+  <div class="hint">T+1 回测：未填写代码时优先用当前选股结果。次日高开概率：输入代码后点“计算高开概率”，按今日形态估计明天；也可直接全盘扫描前十。</div>
   <div id="backtestSummary" class="backtest-summary"><div class="empty">暂无回测结果</div></div>
 </div></details>
 

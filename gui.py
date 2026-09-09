@@ -523,6 +523,10 @@ class ScreenApp(tk.Tk):
                     self.cancel_button.configure(state="disabled")
                     if hasattr(self, "backtest_button"):
                         self.backtest_button.configure(state="normal", text="开始 T+1 回测")
+                    if hasattr(self, "gap_one_button"):
+                        self.gap_one_button.configure(state="normal", text="计算高开概率")
+                    if hasattr(self, "gap_scan_button"):
+                        self.gap_scan_button.configure(state="normal", text="全盘扫描前十")
                     self.save_result_button.configure(
                         state="normal" if not self.result.empty else "disabled"
                     )
@@ -891,14 +895,28 @@ class ScreenApp(tk.Tk):
             row=row, column=1, columnspan=3, sticky="w"
         )
         row += 1
+        ttk.Label(
+            parent,
+            text="次日高开概率：按今日形态找本股最相似历史日，再用行业/活跃股相似日做市场确认。两套结果接近更可信。取不到日K（停牌/退市/接口失败）会明确提示。",
+            wraplength=720,
+        ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        row += 1
         actions = ttk.Frame(parent)
         actions.grid(row=row, column=0, columnspan=4, sticky="w", pady=8)
         self.backtest_button = ttk.Button(
             actions, text="开始 T+1 回测", command=self._start_backtest
         )
         self.backtest_button.grid(row=0, column=0, padx=(0, 8))
+        self.gap_one_button = ttk.Button(
+            actions, text="计算高开概率", command=self._start_gap_one
+        )
+        self.gap_one_button.grid(row=0, column=1, padx=(0, 8))
+        self.gap_scan_button = ttk.Button(
+            actions, text="全盘扫描前十", command=self._start_gap_scan
+        )
+        self.gap_scan_button.grid(row=0, column=2, padx=(0, 8))
         ttk.Button(actions, text="导出回测结果", command=self._export_backtest).grid(
-            row=0, column=1
+            row=0, column=3
         )
         row += 1
         frame = ttk.Labelframe(parent, text="回测汇总", padding=6)
@@ -977,6 +995,8 @@ class ScreenApp(tk.Tk):
         self.start_button.configure(state="disabled")
         self.monitor_button.configure(state="disabled")
         self.backtest_button.configure(text="停止回测")
+        self.gap_one_button.configure(state="disabled")
+        self.gap_scan_button.configure(state="disabled")
         self.status_var.set("正在进行 T+1 回测...")
         self._append_log("===== 开始 T+1 历史回测 =====")
         codes = self.value_vars["bt_codes"].get()
@@ -987,6 +1007,73 @@ class ScreenApp(tk.Tk):
                     options,
                     codes_text=codes,
                     screen_rows=self.result,
+                    log_callback=lambda message: self.messages.put(("log", message)),
+                    stop_event=self.backtest_stop,
+                )
+                self.messages.put(("backtest_result", (summary, samples)))
+            except Exception as exc:  # noqa: BLE001
+                self.messages.put(("error", str(exc)))
+            finally:
+                self.messages.put(("done", None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _lock_gap_buttons(self, active: str) -> None:
+        self.running = True
+        self.backtest_stop.clear()
+        self.cancel_button.configure(state="normal")
+        self.start_button.configure(state="disabled")
+        self.monitor_button.configure(state="disabled")
+        self.backtest_button.configure(state="disabled")
+        if active == "one":
+            self.gap_one_button.configure(text="停止计算")
+            self.gap_scan_button.configure(state="disabled")
+        else:
+            self.gap_one_button.configure(state="disabled")
+            self.gap_scan_button.configure(text="停止扫描")
+
+    def _start_gap_one(self) -> None:
+        if self.running:
+            self.backtest_stop.set()
+            self.gap_one_button.configure(state="disabled")
+            self._append_log("正在停止高开概率计算...")
+            return
+        codes = self.value_vars["bt_codes"].get().strip()
+        if not codes:
+            messagebox.showerror("参数错误", "请先输入股票代码")
+            return
+        self._lock_gap_buttons("one")
+        self.status_var.set("正在计算高开概率...")
+        self._append_log("===== 开始计算高开概率 =====")
+
+        def worker() -> None:
+            try:
+                summary, samples = backtest.run_gap_probability(
+                    codes,
+                    log_callback=lambda message: self.messages.put(("log", message)),
+                    stop_event=self.backtest_stop,
+                )
+                self.messages.put(("backtest_result", (summary, samples)))
+            except Exception as exc:  # noqa: BLE001
+                self.messages.put(("error", str(exc)))
+            finally:
+                self.messages.put(("done", None))
+
+        threading.Thread(target=worker, daemon=True).start()
+
+    def _start_gap_scan(self) -> None:
+        if self.running:
+            self.backtest_stop.set()
+            self.gap_scan_button.configure(state="disabled")
+            self._append_log("正在停止全盘高开扫描...")
+            return
+        self._lock_gap_buttons("scan")
+        self.status_var.set("正在全盘扫描高开概率...")
+        self._append_log("===== 开始全盘扫描高开概率前十 =====")
+
+        def worker() -> None:
+            try:
+                summary, samples = backtest.run_gap_scan_top(
                     log_callback=lambda message: self.messages.put(("log", message)),
                     stop_event=self.backtest_stop,
                 )
