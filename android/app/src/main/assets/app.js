@@ -5,7 +5,8 @@ const API = {
     "https://push2delay.eastmoney.com/api/qt/stock/kline/get"
   ],
   trend: "https://push2delay.eastmoney.com/api/qt/stock/trends2/get",
-  dataCenter: "https://datacenter-web.eastmoney.com/api/data/v1/get"
+  dataCenter: "https://datacenter-web.eastmoney.com/api/data/v1/get",
+  flow: "https://push2.eastmoney.com/api/qt/clist/get"
 };
 const MONITOR_INFLOW_MIN = 10000000;
 
@@ -296,6 +297,98 @@ async function fetchHotBoards(tokenValue, topN) {
   state.hotCodesAt = Date.now();
   state.hotTopN = topN;
   return { codes, memberMap, boards };
+}
+
+async function fetchResonanceFlows(tokenValue) {
+  const fields = "f12,f14,f2,f3,f6,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87";
+  const raw = await fetchClist("m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81,m:1+t:13", fields, tokenValue);
+  const map = new Map();
+  raw.forEach((row) => {
+    const code = String(row.f12 || "").padStart(6, "0");
+    const institution = number(row.f69) + number(row.f75);
+    const retail = number(row.f81) + number(row.f87);
+    map.set(code, { institution, retail, bigOrder: institution, incremental: number(row.f184) });
+  });
+  return map;
+}
+
+function resonanceAdx(rows, period = 14) {
+  if (rows.length < period * 2 + 2) return null;
+  const tr = [], plus = [], minus = [];
+  for (let i = 1; i < rows.length; i += 1) {
+    const prev = rows[i - 1], cur = rows[i];
+    tr.push(Math.max(cur.high - cur.low, Math.abs(cur.high - prev.close), Math.abs(cur.low - prev.close)));
+    const up = cur.high - prev.high, down = prev.low - cur.low;
+    plus.push(up > down && up > 0 ? up : 0); minus.push(down > up && down > 0 ? down : 0);
+  }
+  const smooth = (values) => {
+    const out = []; let acc = values.slice(0, period).reduce((a, b) => a + b, 0); out.push(acc);
+    for (let i = period; i < values.length; i += 1) { acc = acc - acc / period + values[i]; out.push(acc); }
+    return out;
+  };
+  const atr = smooth(tr), p = smooth(plus), m = smooth(minus), dx = [];
+  for (let i = 0; i < atr.length; i += 1) {
+    if (!atr[i]) continue;
+    const pdi = 100 * p[i] / atr[i], mdi = 100 * m[i] / atr[i];
+    dx.push(pdi + mdi ? 100 * Math.abs(pdi - mdi) / (pdi + mdi) : 0);
+  }
+  if (dx.length < period + 2) return null;
+  const series = []; let seed = dx.slice(0, period).reduce((a, b) => a + b, 0) / period; series.push(seed);
+  for (let i = period; i < dx.length; i += 1) { seed = ((seed * (period - 1)) + dx[i]) / period; series.push(seed); }
+  const adx = series.at(-1), adxr = series.length > period ? (adx + series.at(-1 - period)) / 2 : series.at(-2);
+  return { adx, adxr };
+}
+
+function resonanceFibCross(rows) {
+  if (rows.length < 30) return { cross: false, second: false };
+  const pos = rows.map((row, i) => {
+    const body = rows.slice(Math.max(0, i - 19), i + 1);
+    const low = Math.min(...body.map((x) => x.low)), high = Math.max(...body.map((x) => x.high));
+    return high > low ? (row.close - low) / (high - low) : 0.5;
+  });
+  const ema = (values, span) => {
+    const alpha = 2 / (span + 1); let prev = values[0]; const out = [prev];
+    for (let i = 1; i < values.length; i += 1) { prev = alpha * values[i] + (1 - alpha) * prev; out.push(prev); }
+    return out;
+  };
+  const fast = ema(pos, 3), slow = ema(pos, 8), crosses = [];
+  for (let i = 1; i < pos.length; i += 1) if (fast[i - 1] <= slow[i - 1] && fast[i] > slow[i]) crosses.push(i);
+  return { cross: crosses.some((i) => i >= pos.length - 5), second: crosses.filter((i) => i >= pos.length - 60).length >= 2 };
+}
+
+function todayLimitUp(row) {
+  const threshold = /ST|退/i.test(row.name || "") ? 4.8 : /^(300|301|688)/.test(row.code) ? 19.5 : /^[84]/.test(row.code) ? 29.5 : 9.5;
+  return row.pct >= threshold;
+}
+
+async function runResonanceScreen(preset, tokenValue) {
+  const presetMap = { retail20_big02: { retail: -20, big: 0.2 }, retail40_big04: { retail: -40, big: 0.4 }, retail50_big04: { retail: -50, big: 0.4 } };
+  const rule = presetMap[preset] || presetMap.retail20_big02;
+  clearLog();
+  logMessage("===== 资金/机构共振选股 =====");
+  logMessage("公开资金流字段做代理：超大单+大单=机构资金代理，中单+小单=散户资金行为代理。");
+  const spot = await fetchSpot(tokenValue); check(tokenValue);
+  let pool = spot.filter((row) => !/^(300|301|688)/.test(row.code) && !/ST|退/i.test(row.name) && !todayLimitUp(row));
+  logMessage("基础过滤：" + pool.length + " 只（已排除创业板、科创板、ST、涨停）");
+  const flows = await fetchResonanceFlows(tokenValue);
+  pool = pool.map((row) => ({ ...row, flow: flows.get(row.code) })).filter((row) => row.flow);
+  pool = pool.filter((row) => row.flow.retail < rule.retail && row.flow.bigOrder >= rule.big && row.flow.institution > -10 && row.flow.incremental > 0.1);
+  logMessage("资金条件：" + pool.length + " 只");
+  const results = await mapLimit(pool, 4, async (row) => {
+    const history = await fetchKline(row.code, tokenValue), adx = resonanceAdx(history), fib = resonanceFibCross(history);
+    const turn = history.length >= 6 && history.at(-1).close > history.at(-3).close && history.at(-3).close >= history.at(-5).close;
+    if (!adx || adx.adx <= adx.adxr || !fib.cross || !turn) return null;
+    return {
+      代码: row.code, 名称: row.name, 涨跌幅: row.pct.toFixed(2),
+      大单净量代理: row.flow.bigOrder.toFixed(3), 散户资金代理: row.flow.retail.toFixed(3),
+      机构做多能量代理: row.flow.institution.toFixed(3), 增量资金: row.flow.incremental.toFixed(3),
+      ADX: adx.adx.toFixed(2), ADXR: adx.adxr.toFixed(2), "ADX-ADXR": (adx.adx - adx.adxr).toFixed(2),
+      斐波那契金叉: "是", 斐波那契二次金叉: fib.second ? "是" : "否", 机构做多拐头代理: "是"
+    };
+  }, tokenValue, (value) => logMessage("   命中 " + value.代码 + " " + value.名称));
+  results.sort((a, b) => Number(b.大单净量代理) - Number(a.大单净量代理));
+  logMessage("===== 共振选股完成：" + results.length + " 只 =====");
+  return results;
 }
 
 function median(values) {
@@ -1037,4 +1130,21 @@ async function startSimilarity() {
 document.querySelector("#screenButton").addEventListener("click", startScreen);
 document.querySelector("#monitorButton").addEventListener("click", toggleMonitor);
 document.querySelector("#similarButton").addEventListener("click", startSimilarity);
+document.querySelector("#resonanceButton")?.addEventListener("click", async () => {
+  if (state.resonance) { stopToken(state.resonance); setStatus("正在停止共振选股..."); return; }
+  state.resonance = token();
+  const preset = document.querySelector("#resonancePreset")?.value || "retail20_big02";
+  document.querySelector("#resonanceButton").textContent = "停止共振选股";
+  setStatus("正在运行资金/机构共振...");
+  try {
+    const result = await runResonanceScreen(preset, state.resonance);
+    state.exportRows = result; renderResults(result);
+    if (!state.resonance.stopped) setStatus("共振选股完成：" + result.length + " 只");
+  } catch (error) {
+    if (!state.resonance?.stopped) { logMessage("共振选股失败：" + error.message); setStatus("共振选股失败：" + error.message); }
+  } finally {
+    state.resonance = null;
+    document.querySelector("#resonanceButton").textContent = "运行共振选股";
+  }
+});
 document.querySelector("#exportButton").addEventListener("click", saveResult);
