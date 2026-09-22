@@ -55,6 +55,7 @@
     advanced.className = "advanced-zone";
     advanced.innerHTML = `<div class="advanced-title">高级工具</div>`;
     [tech,similar].filter(Boolean).forEach((el) => advanced.appendChild(el));
+    host.appendChild(advanced);
     if (logs) { logs.id = "logsArea"; host.appendChild(logs); }
     const monitorPanel = document.createElement("section");
     monitorPanel.id = "monitorArea";
