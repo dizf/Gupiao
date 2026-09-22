@@ -57,6 +57,59 @@
     [tech,similar].filter(Boolean).forEach((el) => advanced.appendChild(el));
     host.appendChild(advanced);
     if (logs) { logs.id = "logsArea"; host.appendChild(logs); }
+
+    // Second-round UX: keep the default workflow intentionally small.
+    const quickTech = document.createElement("section");
+    quickTech.className = "module-card quick-tech";
+    quickTech.innerHTML = '<h3>常用技术条件 <span class="summary-note">可选</span></h3><p>新手模式只保留这 4 个容易理解的条件。勾选后会与基础筛选一起执行；未勾选不会生效。</p><div id="quickTechHost"></div>';
+    const quickTechHost = quickTech.querySelector("#quickTechHost");
+    ["enableMaBullish","enableMa5Bias","enableNearHigh","enableVolumeStair"].forEach((id) => {
+      const el = document.getElementById(id);
+      if (!el) return;
+      const label = el.closest(".check");
+      if (label) quickTechHost.appendChild(label);
+    });
+
+    const conditionSummary = document.createElement("section");
+    conditionSummary.className = "module-card condition-summary";
+    conditionSummary.innerHTML = '<div class="condition-head"><b>本次运行条件</b><span id="conditionMode">新手模式</span></div><div id="conditionList" class="condition-list"></div><div class="condition-foot">只有这里列出的条件会参与“开始选股”。高开、监控、共振是独立任务。</div>';
+    const updateConditionSummary = () => {
+      const ids = [
+        ["enablePct","涨幅"],["enableTurnover","换手率"],["enableVolumeRatio","量比"],
+        ["enableCircMv","流通市值"],["enableProfitable","盈利企业"],["enableMainInflow","主力净流入"],
+        ["enableMaBullish","均线多头"],["enableMa5Bias","贴近5日线"],["enableNearHigh","接近20日高点"],
+        ["enableVolumeStair","台阶放量"],["enableHotBoard","热点板块"],["enableStrongerThanIndex","强于大盘"],
+        ["enableLimitUp","近N日涨停"],["enableLhbCount","龙虎榜"],["enableVwap","站上分时均价"],
+        ["enableTailHigh","14:30后新高"],["enableRapidRise","分时急拉"]
+      ];
+      const active = ids.filter(([id]) => document.getElementById(id)?.checked).map(([,name]) => name);
+      const list = document.getElementById("conditionList");
+      if (list) list.innerHTML = active.length
+        ? active.map((name) => '<span class="condition-chip">'+name+'</span>').join("")
+        : '<span class="condition-empty">未启用筛选条件</span>';
+    };
+    conditionSummary.querySelector("#conditionMode").textContent = "新手模式";
+    quickTech.addEventListener("change", updateConditionSummary);
+    basic.addEventListener("change", updateConditionSummary);
+    screen.addEventListener("click", () => setTimeout(updateConditionSummary, 50));
+    screen.parentNode?.insertBefore(conditionSummary, screen);
+    screen.parentNode?.insertBefore(quickTech, conditionSummary.nextSibling);
+
+    const modeBar = document.createElement("div");
+    modeBar.className = "mode-bar";
+    modeBar.innerHTML = '<button class="mode active" data-mode="simple">新手模式</button><button class="mode" data-mode="advanced">高级模式</button>';
+    screen.parentNode?.insertBefore(modeBar, conditionSummary);
+
+    const setMode = (mode) => {
+      const simple = mode === "simple";
+      quickTech.style.display = simple ? "block" : "none";
+      advanced.style.display = simple ? "none" : "block";
+      conditionSummary.querySelector("#conditionMode").textContent = simple ? "新手模式" : "高级模式";
+      modeBar.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
+      updateConditionSummary();
+    };
+    modeBar.querySelectorAll(".mode").forEach((b) => b.addEventListener("click", () => setMode(b.dataset.mode)));
+    setMode("simple");
     const monitorPanel = document.createElement("section");
     monitorPanel.id = "monitorArea";
     monitorPanel.className = "module-card";
@@ -122,7 +175,7 @@
       const text = status ? status.textContent || "就绪" : "就绪";
       const label = $("#brokerStatus");
       if (label) label.textContent = text;
-      const running = /正在|分析中|监控中|回测中|扫描/.test(text);
+      const running = /正在|分析中|监控中|回测中|扫描/.test(text) && !/完成|已停止|就绪/.test(text);
       const error = /失败|错误/.test(text);
       const dot = $("#brokerDot");
       if (dot) dot.className = `market-dot ${running ? "run" : error ? "err" : ""}`;
