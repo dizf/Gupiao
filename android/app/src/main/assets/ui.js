@@ -50,18 +50,16 @@
 
     const host = $("#moduleHost");
     [basic,result,gap,news].filter(Boolean).forEach((el) => host.appendChild(el));
-    [basic,tech,similar,logs].filter(Boolean).forEach((el) => host.appendChild(el));
-    if (basic) basic.id = "screenArea";
-    if (result) result.id = "resultsSection";
-    if (gap) gap.id = "gapArea";
-    if (news) news.id = "newsArea";
     const advanced = document.createElement("div");
     advanced.id = "advancedArea";
     advanced.className = "advanced-zone";
     advanced.innerHTML = `<div class="advanced-title">高级工具</div>`;
     [tech,similar,logs].filter(Boolean).forEach((el) => advanced.appendChild(el));
     host.appendChild(advanced);
-
+    if (basic) basic.id = "screenArea";
+    if (result) result.id = "resultsSection";
+    if (gap) gap.id = "gapArea";
+    if (news) news.id = "newsArea";
     const summary = (el, title, note) => {
       const s = el && $("summary", el);
       if (s) s.innerHTML = `${title}<span class="summary-note">${note}</span>`;
