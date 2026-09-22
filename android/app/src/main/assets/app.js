@@ -23,7 +23,8 @@ const state = {
   hotMemberMap: null,
   hotCodesAt: 0,
   hotTopN: 10,
-  monitorAlertCodes: new Set()
+  monitorAlertCodes: new Set(),
+  resonance: null
 };
 
 window.__marketResolve = (id, success, body) => {
