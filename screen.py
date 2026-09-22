@@ -81,6 +81,13 @@ SIMILAR_TOP_N = 10
 SIMILAR_WORKERS = 8
 SIMILAR_CANDIDATE_LIMIT = 300
 
+RESONANCE_FLOW_FIELDS = "f12,f14,f2,f3,f6,f62,f184,f66,f69,f72,f75,f78,f81,f84,f87"
+RESONANCE_PRESETS = {
+    "retail20_big02": {"retail_max": -20.0, "big_min": 0.20},
+    "retail40_big04": {"retail_max": -40.0, "big_min": 0.40},
+    "retail50_big04": {"retail_max": -50.0, "big_min": 0.40},
+}
+
 
 @dataclass
 class ScreenConfig:
@@ -126,6 +133,17 @@ class ScreenConfig:
     enable_us_sector: bool = True
     enable_notify: bool = True
     monitor_interval: int = MONITOR_INTERVAL
+    enable_resonance: bool = False
+    resonance_preset: str = "retail20_big02"
+    resonance_retail_max: float = -20.0
+    resonance_big_min: float = 0.20
+    resonance_institution_floor: float = -10.0
+    resonance_increment_min: float = 0.10
+    resonance_require_adx: bool = True
+    resonance_require_fib_cross: bool = True
+    resonance_require_fib_second_cross: bool = False
+    resonance_require_institution_turn: bool = True
+    resonance_exclude_limit_up: bool = True
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -1524,6 +1542,130 @@ def clear_data_cache() -> None:
     fetch_trends.cache_clear()
 
 
+def fetch_resonance_flow() -> dict[str, dict[str, float]]:
+    rows = fetch_clist(
+        "m:0+t:6,m:0+t:80,m:1+t:2,m:1+t:23,m:0+t:81,m:1+t:13",
+        RESONANCE_FLOW_FIELDS,
+    )
+    result: dict[str, dict[str, float]] = {}
+    for row in rows:
+        code = str(row.get("f12") or "").zfill(6)
+        if not code:
+            continue
+        institution_ratio = float(row.get("f69") or 0.0) + float(row.get("f75") or 0.0)
+        retail_ratio = float(row.get("f81") or 0.0) + float(row.get("f87") or 0.0)
+        result[code] = {
+            "机构资金代理%": institution_ratio,
+            "散户资金代理%": retail_ratio,
+            "大单净量%": institution_ratio,
+            "增量资金%": float(row.get("f184") or 0.0),
+        }
+    return result
+
+
+def _ema(values: pd.Series, span: int) -> pd.Series:
+    return values.astype(float).ewm(span=span, adjust=False).mean()
+
+
+def adx_adxr(hist: pd.DataFrame, period: int = 14) -> tuple[float, float]:
+    if len(hist) < period * 2 + 2:
+        return 0.0, 0.0
+    high, low, close = hist["最高"].astype(float), hist["最低"].astype(float), hist["收盘"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat([high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1).max(axis=1)
+    up, down = high.diff(), -low.diff()
+    plus_dm = up.where((up > down) & (up > 0), 0.0)
+    minus_dm = down.where((down > up) & (down > 0), 0.0)
+    atr = tr.ewm(alpha=1 / period, adjust=False).mean()
+    plus_di = 100 * plus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, pd.NA)
+    minus_di = 100 * minus_dm.ewm(alpha=1 / period, adjust=False).mean() / atr.replace(0, pd.NA)
+    dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, pd.NA)
+    adx = dx.ewm(alpha=1 / period, adjust=False).mean().dropna()
+    if len(adx) < 2:
+        return 0.0, 0.0
+    current = float(adx.iloc[-1])
+    adxr = float((adx.iloc[-1] + adx.iloc[-period]) / 2) if len(adx) > period else float(adx.iloc[-2])
+    return current, adxr
+
+
+def fibonacci_crosses(hist: pd.DataFrame, lookback: int = 20) -> tuple[bool, bool]:
+    if len(hist) < lookback + 10:
+        return False, False
+    low = hist["最低"].rolling(lookback).min()
+    high = hist["最高"].rolling(lookback).max()
+    span = (high - low).replace(0, pd.NA)
+    fib_pos = ((hist["收盘"] - low) / span).fillna(0.5)
+    fast, slow = _ema(fib_pos, 3), _ema(fib_pos, 8)
+    cross = (fast.shift(1) <= slow.shift(1)) & (fast > slow)
+    return bool(cross.tail(5).any()), int(cross.tail(60).sum()) >= 2
+
+
+def institution_turn_up(hist: pd.DataFrame) -> bool:
+    if len(hist) < 6:
+        return False
+    close = hist["收盘"].astype(float)
+    return bool(close.iloc[-1] > close.iloc[-3] and close.iloc[-3] >= close.iloc[-5])
+
+
+def is_limit_up_today(row: pd.Series) -> bool:
+    threshold = limit_up_threshold(str(row.get("代码") or ""), str(row.get("名称") or ""))
+    return float(row.get("涨跌幅") or 0.0) >= threshold
+
+
+def run_resonance_screen(
+    preset: str = "retail20_big02",
+    workers: int = 6,
+    log_callback: Callable[[str], None] = log,
+    stop_event: threading.Event | None = None,
+) -> pd.DataFrame:
+    cfg = RESONANCE_PRESETS.get(preset, RESONANCE_PRESETS["retail20_big02"])
+    log_callback("资金/机构共振：公开资金流字段做代理，不冒充第三方软件私有指标")
+    spot = fetch_spot()
+    if spot.empty:
+        raise RuntimeError("未取到行情")
+    pool = spot[~spot["代码"].str.startswith(("300", "301", "688"))].copy()
+    pool = pool[~pool["名称"].astype(str).str.contains("ST|退", case=False, regex=True)]
+    pool = pool[~pool.apply(is_limit_up_today, axis=1)].copy()
+    log_callback(f"基础过滤后 {len(pool)} 只（已排除创业板/科创板/ST/涨停）")
+    flows = fetch_resonance_flow()
+    for col in ("机构资金代理%", "散户资金代理%", "大单净量%", "增量资金%"):
+        pool[col] = pool["代码"].map(lambda c: flows.get(c, {}).get(col, float("nan")))
+    pool = pool[pool["散户资金代理%"] < cfg["retail_max"]]
+    pool = pool[pool["大单净量%"] >= cfg["big_min"]]
+    pool = pool[pool["机构资金代理%"] > -10.0]
+    pool = pool[pool["增量资金%"] > 0.10]
+    log_callback(f"资金条件剩余 {len(pool)} 只")
+    picked: list[dict[str, Any]] = []
+    for _, row in pool.iterrows():
+        if stop_event and stop_event.is_set():
+            break
+        code, name = row["代码"], row["名称"]
+        try:
+            hist = fetch_kline(code, limit=120)
+            adx, adxr = adx_adxr(hist)
+            fib_cross, fib_second = fibonacci_crosses(hist)
+            turn_up = institution_turn_up(hist)
+            if adx <= adxr or not fib_cross or not turn_up:
+                continue
+            picked.append({
+                "代码": code, "名称": name, "涨跌幅": round(float(row["涨跌幅"]), 2),
+                "大单净量%": round(float(row["大单净量%"]), 3),
+                "散户资金代理%": round(float(row["散户资金代理%"]), 3),
+                "机构做多能量代理%": round(float(row["机构资金代理%"]), 3),
+                "增量资金%": round(float(row["增量资金%"]), 3),
+                "ADX": round(adx, 2), "ADXR": round(adxr, 2), "ADX-ADXR": round(adx - adxr, 2),
+                "斐波那契金叉": "是", "斐波那契二次金叉": "是" if fib_second else "否",
+                "机构做多拐头代理": "是",
+            })
+        except Exception as exc:
+            log_callback(f"   {code} {name}：指标计算失败 {exc}")
+    result = pd.DataFrame(picked)
+    if not result.empty:
+        result = result.sort_values(["大单净量%", "ADX-ADXR"], ascending=False)
+    log_callback(f"===== 资金/机构共振最终结果 {len(result)} 只 =====")
+    return result
+
+
 def run_screen(
     config: ScreenConfig | None = None,
     workers: int = 4,
@@ -1657,6 +1799,8 @@ def main() -> int:
     parser.add_argument("--hot-n", type=int, default=HOT_BOARD_TOP_N, help="热点概念板块取前 N 个")
     parser.add_argument("--workers", type=int, default=2, help="个股复检并发数")
     parser.add_argument("--out", default="", help="结果 CSV 路径，默认按日期生成")
+    parser.add_argument("--resonance", action="store_true", help="运行新增资金/机构共振选股")
+    parser.add_argument("--resonance-preset", choices=list(RESONANCE_PRESETS), default="retail20_big02")
     parser.add_argument("--similar-code", default="", help="查找相似走势的股票代码")
     parser.add_argument(
         "--similar-window",
@@ -1702,6 +1846,19 @@ def main() -> int:
                 f"similar_{str(args.similar_code).zfill(6)}_"
                 f"{datetime.now().strftime('%Y%m%d')}.csv"
             )
+            save_csv(out_df.to_dict("records"), out_path)
+            log(f"已保存 {out_path}")
+        return 0
+
+    if args.resonance:
+        try:
+            out_df = run_resonance_screen(preset=args.resonance_preset, workers=args.workers)
+        except Exception as exc:
+            log(f"资金/机构共振运行失败：{exc}")
+            return 1
+        if not out_df.empty:
+            log(out_df.to_string(index=False))
+            out_path = args.out or f"resonance_{datetime.now().strftime('%Y%m%d')}.csv"
             save_csv(out_df.to_dict("records"), out_path)
             log(f"已保存 {out_path}")
         return 0
