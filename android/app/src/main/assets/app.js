@@ -308,7 +308,8 @@ async function fetchResonanceFlows(tokenValue) {
     const code = String(row.f12 || "").padStart(6, "0");
     const institution = number(row.f69) + number(row.f75);
     const retail = number(row.f81) + number(row.f87);
-    map.set(code, { institution, retail, bigOrder: institution, incremental: number(row.f184) });
+    const bigOrder = number(row.f75);
+    map.set(code, { institution, retail, bigOrder, incremental: number(row.f184) });
   });
   return map;
 }
@@ -647,8 +648,31 @@ async function mapLimit(rows, limit, callback, tokenValue, success) {
   return results;
 }
 
+function readMonitorOptions() {
+  const value = (id, fallback) => {
+    const el = document.querySelector("#" + id);
+    const n = Number(el?.value);
+    return Number.isFinite(n) ? n : fallback;
+  };
+  return {
+    enablePct: false, enableTurnover: false, enableVolumeRatio: false,
+    enableCircMv: false, enableProfitable: false, enableMainInflow: false,
+    enableHotBoard: false, enableLhbCount: false, enableLimitUp: false,
+    enableVolumeStair: false, enableMaBullish: false, enableMa5Bias: false,
+    enablePlatform: false, enableNearHigh: false, enableVwap: false,
+    enableStrongerThanIndex: false, enableTailHigh: false,
+    enableRapidRise: true,
+    rapidWindow: Math.max(1, value("monitorRapidWindow", 5)),
+    rapidPct: Math.max(0, value("monitorRapidPct", 2)),
+    rapidVolume: Math.max(0, value("monitorRapidVolume", 1.5)),
+    skipOpenMinutes: Math.max(0, value("monitorSkipOpen", 5)),
+    monitorInterval: Math.max(15, value("monitorIntervalUi", 15)),
+    enableNotify: Boolean(document.querySelector("#monitorNotifyUi")?.checked)
+  };
+}
+
 async function runScreen(live, tokenValue, update) {
-  const options = readOptions();
+  const options = live ? readMonitorOptions() : readOptions();
   const monitorOptions = live ? {
     ...options,
     enableHotBoard: false,
