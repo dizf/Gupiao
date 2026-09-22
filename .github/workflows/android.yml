@@ -29,6 +29,7 @@ jobs:
           node --check android/app/src/main/assets/backtest.js
           node --check android/app/src/main/assets/ui.js
           node --check android/app/src/main/assets/features.js
+          python3 -m py_compile screen.py backtest.py gui.py
 
       - name: Inject mobile UI and feature controllers
         run: |
