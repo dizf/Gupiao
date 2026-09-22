@@ -105,7 +105,8 @@
     const setMode = (mode) => {
       const simple = mode === "simple";
       quickTech.style.display = simple ? "block" : "none";
-      advanced.style.display = simple ? "none" : "block";
+      advanced.style.display = "block";
+      advanced.classList.toggle("ui-module-hidden", simple);
       conditionSummary.querySelector("#conditionMode").textContent = simple ? "新手模式" : "高级模式";
       modeBar.querySelectorAll(".mode").forEach((b) => b.classList.toggle("active", b.dataset.mode === mode));
       updateConditionSummary();
