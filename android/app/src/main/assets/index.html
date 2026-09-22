@@ -32,7 +32,12 @@
 <details class="section">
 <summary>② 技术形态 <span class="summary-note">趋势 · 突破 · 强势</span></summary>
 <div class="content">
-  <div class="section-title">板块与强势</div>
+  <div class="section-title">资金/机构共振</div>
+  <div class="help">三档规则对应你提供的“散户数量/大单净量”条件。由于公开行情接口没有第三方软件的私有“散户数量、萧啸主力资金、机构做多能量线”原始字段，App 使用公开资金流分项做代理，并明确标注；ADX/ADXR、斐波那契金叉按本项目统一公式计算。</div>
+  <label class="check"><input id="enableResonance" type="checkbox">启用资金/机构共振选股</label>
+  <label class="field">共振规则<select id="resonancePreset"><option value="retail20_big02">散户代理 &lt; -20 + 大单净量代理 ≥ 0.2</option><option value="retail40_big04">散户代理 &lt; -40 + 大单净量代理 ≥ 0.4</option><option value="retail50_big04">散户代理 &lt; -50 + 大单净量代理 ≥ 0.4</option></select></label>
+  <div class="actions"><button id="resonanceButton">运行共振选股</button></div>
+<div class="section-title">板块与强势</div>
   <label class="check"><input id="enableHotBoard" type="checkbox" checked>热点板块筛选</label><div class="grid"><label class="field">前 N 个板块<input id="hotBoardTopN" type="number" value="10" min="1"></label><label class="field">监控刷新秒数<input id="monitorInterval" type="number" value="15" min="15"></label></div>
   <label class="check"><input id="enableStrongerThanIndex" type="checkbox" checked>走势强于上证指数</label>
   <label class="check"><input id="enableLimitUp" type="checkbox">近 N 日有涨停</label><div class="grid"><label class="field">回看交易日<input id="limitUpLookback" type="number" value="20" min="1"></label><label class="field">龙虎榜次数大于<input id="lhbCountMin" type="number" value="10" min="0"></label></div>
