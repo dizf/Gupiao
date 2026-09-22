@@ -54,7 +54,8 @@
     advanced.id = "advancedArea";
     advanced.className = "advanced-zone";
     advanced.innerHTML = `<div class="advanced-title">高级工具</div>`;
-    [tech,similar,logs].filter(Boolean).forEach((el) => advanced.appendChild(el));
+    [tech,similar].filter(Boolean).forEach((el) => advanced.appendChild(el));
+    if (logs) { logs.id = "logsArea"; host.appendChild(logs); }
     const monitorPanel = document.createElement("section");
     monitorPanel.id = "monitorArea";
     monitorPanel.className = "module-card";
@@ -67,8 +68,8 @@
     const resonanceTitle = tech && $(".section-title", tech).find((x) => (x.textContent || "").includes("资金/机构共振"));
     const boardTitle = tech && $(".section-title", tech).find((x) => (x.textContent || "").includes("板块与强势"));
     if (resonanceTitle && boardTitle) { let n = resonanceTitle; const hostBox = $("#resonanceHost"); while (n && n !== boardTitle) { const next = n.nextElementSibling; hostBox.appendChild(n); n = next; } }
-    hostBox = $("#resonanceHost");
-    if (hostBox) { const btn = $("#resonanceButton"); if (btn) hostBox.appendChild(btn); }
+    const resonanceHost = $("#resonanceHost");
+    if (resonanceHost) { const btn = $("#resonanceButton"); if (btn) resonanceHost.appendChild(btn); }
     host.appendChild(monitorPanel);
     host.appendChild(resonancePanel);
     if (basic) basic.id = "screenArea";
@@ -99,12 +100,13 @@
     $("#proxyScreen").onclick = () => click("#screenButton");
     $("#proxyMonitor").onclick = () => click("#monitorButton");
 
-    const moduleTargets = ["screenArea","gapArea","monitorArea","resonanceArea","resultsSection","advancedArea"];
+    const moduleTargets = ["screenArea","gapArea","monitorArea","resonanceArea","resultsSection","advancedArea","logsArea"];
     const showModule = (id) => {
       moduleTargets.forEach((name) => {
         const el = document.getElementById(name);
         if (!el) return;
-        el.classList.toggle("ui-module-hidden", name !== id);
+        const visible = id === "resultsSection" ? (name === "resultsSection" || name === "logsArea") : name === id;
+        el.classList.toggle("ui-module-hidden", !visible);
       });
       $('[data-target]').forEach((x) => x.classList.toggle("active", x.dataset.target === id));
       const target = document.getElementById(id);
