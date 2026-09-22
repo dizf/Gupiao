@@ -39,7 +39,7 @@
       .core-card{border-color:#dce2ea!important}.gap-card{border-color:#d8e1ef!important}.news-card{border-color:#e1e5eb!important}.result-card{border:1px solid #e5e9ef!important;border-radius:11px!important;padding:11px!important;background:#fff!important}.result-card-title{font-size:13px!important;color:var(--navy)!important}.result-field-label{font-size:8px!important;color:var(--muted)!important}.result-field-value{font-size:11px!important;font-weight:700!important}.results-scroll{border-radius:10px}.results-scroll th{background:#f1f3f6!important;color:#566171!important;font-size:9px!important}.results-scroll th,.results-scroll td{padding:7px 6px!important}
       .advanced-zone{margin-top:14px}.advanced-title{margin:12px 3px 8px;font-size:11px;font-weight:800;color:#697586}.advanced-title:before{content:"";display:inline-block;width:3px;height:13px;margin-right:7px;border-radius:3px;background:#aeb7c3}.logbox{max-height:280px!important;border-radius:10px!important;font-size:9px!important}.log-actions{display:flex;justify-content:flex-end;margin:7px 0}.log-copy{border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 9px;color:#697586;font-size:9px;font-weight:700}
       .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:100;display:grid;grid-template-columns:repeat(5,1fr);padding:6px 10px calc(6px + env(safe-area-inset-bottom));background:rgba(255,255,255,.97);backdrop-filter:blur(16px);border-top:1px solid #e3e7ec;box-shadow:0 -5px 18px rgba(20,34,56,.08)}.bottom-nav button{border:0;background:none;color:#8993a1;font-size:9px;font-weight:700;padding:4px 2px}.bottom-nav button b{display:block;margin-bottom:2px;font-size:17px;font-weight:500}.bottom-nav button.active{color:var(--navy)}
-      .quick-tabs{position:sticky;top:0;z-index:30;background:var(--bg);padding:8px 0;margin:0 0 10px;grid-template-columns:repeat(6,1fr)}.quick-tabs button{font-size:10px;min-height:38px}.ui-module-hidden{display:none!important}.module-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0}.module-card h3{font-size:13px;margin:0 0 5px}.module-card p{font-size:10px;line-height:1.55;color:var(--muted);margin:0 0 10px}.module-card .actions{margin-top:8px}.module-card .actions button{min-height:42px}.bottom-nav{display:none!important}@media(max-width:380px){.metric-grid{gap:5px}.metric{padding:8px 6px}.metric strong{font-size:14px}.quick-tabs{gap:3px}.quick-tabs button{font-size:9px}}@media(min-width:700px){.broker-head{padding-left:max(16px,calc((100% - 760px)/2 + 16px));padding-right:max(16px,calc((100% - 760px)/2 + 16px))}}
+      .quick-tabs{position:sticky;top:0;z-index:30;background:var(--bg);padding:8px 0;margin:0 0 10px;grid-template-columns:repeat(6,1fr)}.quick-tabs button{font-size:10px;min-height:38px}.ui-module-hidden{display:none!important}.module-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0}.module-card h3{font-size:13px;margin:0 0 5px}.module-card p{font-size:10px;line-height:1.55;color:var(--muted);margin:0 0 10px}.module-card .actions{margin-top:8px}.module-card .actions button{min-height:42px}.mode-bar{display:grid;grid-template-columns:1fr 1fr;gap:6px;margin-bottom:9px}.mode-bar .mode{min-height:36px;border:1px solid var(--line);border-radius:9px;background:#fff;color:#687486;font-size:10px;font-weight:800}.mode-bar .mode.active{background:var(--navy);color:#fff;border-color:var(--navy)}.condition-summary{border-left:3px solid var(--blue)}.condition-head{display:flex;align-items:center;justify-content:space-between;font-size:12px}.condition-head span{font-size:9px;color:var(--blue);font-weight:700}.condition-list{display:flex;gap:5px;flex-wrap:wrap;margin-top:8px}.condition-chip{font-size:9px;padding:4px 7px;border-radius:99px;background:#eef3ff;color:#3157a6}.condition-empty{font-size:10px;color:var(--muted)}.condition-foot{margin-top:8px;font-size:9px;line-height:1.45;color:var(--muted)}.bottom-nav{display:none!important}@media(max-width:380px){.metric-grid{gap:5px}.metric{padding:8px 6px}.metric strong{font-size:14px}.quick-tabs{gap:3px}.quick-tabs button{font-size:9px}}@media(min-width:700px){.broker-head{padding-left:max(16px,calc((100% - 760px)/2 + 16px));padding-right:max(16px,calc((100% - 760px)/2 + 16px))}}
     `;
     document.head.appendChild(style);
 
@@ -91,14 +91,16 @@
     conditionSummary.querySelector("#conditionMode").textContent = "新手模式";
     quickTech.addEventListener("change", updateConditionSummary);
     basic.addEventListener("change", updateConditionSummary);
-    screen.addEventListener("click", () => setTimeout(updateConditionSummary, 50));
-    screen.parentNode?.insertBefore(conditionSummary, screen);
-    screen.parentNode?.insertBefore(quickTech, conditionSummary.nextSibling);
 
     const modeBar = document.createElement("div");
     modeBar.className = "mode-bar";
     modeBar.innerHTML = '<button class="mode active" data-mode="simple">新手模式</button><button class="mode" data-mode="advanced">高级模式</button>';
-    screen.parentNode?.insertBefore(modeBar, conditionSummary);
+    const basicContent = basic.querySelector(".content");
+    if (basicContent) {
+      basicContent.insertBefore(modeBar, basicContent.firstChild);
+      basicContent.insertBefore(conditionSummary, modeBar.nextSibling);
+      basicContent.insertBefore(quickTech, conditionSummary.nextSibling);
+    }
 
     const setMode = (mode) => {
       const simple = mode === "simple";
