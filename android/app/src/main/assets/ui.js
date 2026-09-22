@@ -172,6 +172,8 @@
     if (monitorNotify) monitorNotify.addEventListener("change", () => {});
     const oldMonitor = $("#monitorInterval");
     if (oldMonitor) oldMonitor.closest("label.field")?.style.setProperty("opacity", "0.45");
+    const enableResonance = $("#enableResonance");
+    if (enableResonance) { const label = enableResonance.closest(".check"); if (label) label.style.display = "none"; }
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded",boot,{once:true});
