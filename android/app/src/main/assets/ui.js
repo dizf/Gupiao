@@ -39,13 +39,13 @@
       .core-card{border-color:#dce2ea!important}.gap-card{border-color:#d8e1ef!important}.news-card{border-color:#e1e5eb!important}.result-card{border:1px solid #e5e9ef!important;border-radius:11px!important;padding:11px!important;background:#fff!important}.result-card-title{font-size:13px!important;color:var(--navy)!important}.result-field-label{font-size:8px!important;color:var(--muted)!important}.result-field-value{font-size:11px!important;font-weight:700!important}.results-scroll{border-radius:10px}.results-scroll th{background:#f1f3f6!important;color:#566171!important;font-size:9px!important}.results-scroll th,.results-scroll td{padding:7px 6px!important}
       .advanced-zone{margin-top:14px}.advanced-title{margin:12px 3px 8px;font-size:11px;font-weight:800;color:#697586}.advanced-title:before{content:"";display:inline-block;width:3px;height:13px;margin-right:7px;border-radius:3px;background:#aeb7c3}.logbox{max-height:280px!important;border-radius:10px!important;font-size:9px!important}.log-actions{display:flex;justify-content:flex-end;margin:7px 0}.log-copy{border:1px solid var(--line);border-radius:8px;background:#fff;padding:6px 9px;color:#697586;font-size:9px;font-weight:700}
       .bottom-nav{position:fixed;left:0;right:0;bottom:0;z-index:100;display:grid;grid-template-columns:repeat(5,1fr);padding:6px 10px calc(6px + env(safe-area-inset-bottom));background:rgba(255,255,255,.97);backdrop-filter:blur(16px);border-top:1px solid #e3e7ec;box-shadow:0 -5px 18px rgba(20,34,56,.08)}.bottom-nav button{border:0;background:none;color:#8993a1;font-size:9px;font-weight:700;padding:4px 2px}.bottom-nav button b{display:block;margin-bottom:2px;font-size:17px;font-weight:500}.bottom-nav button.active{color:var(--navy)}
-      @media(max-width:380px){.metric-grid{gap:5px}.metric{padding:8px 6px}.metric strong{font-size:14px}.quick-tabs{gap:5px}.quick-tabs button{font-size:10px}}@media(min-width:700px){.broker-head{padding-left:max(16px,calc((100% - 760px)/2 + 16px));padding-right:max(16px,calc((100% - 760px)/2 + 16px))}.bottom-nav{max-width:760px;left:50%;right:auto;width:100%;transform:translateX(-50%)}}
+      .quick-tabs{position:sticky;top:0;z-index:30;background:var(--bg);padding:8px 0;margin:0 0 10px;grid-template-columns:repeat(6,1fr)}.quick-tabs button{font-size:10px;min-height:38px}.ui-module-hidden{display:none!important}.module-card{background:#fff;border:1px solid var(--line);border-radius:14px;padding:12px;margin:10px 0}.module-card h3{font-size:13px;margin:0 0 5px}.module-card p{font-size:10px;line-height:1.55;color:var(--muted);margin:0 0 10px}.module-card .actions{margin-top:8px}.module-card .actions button{min-height:42px}.bottom-nav{display:none!important}@media(max-width:380px){.metric-grid{gap:5px}.metric{padding:8px 6px}.metric strong{font-size:14px}.quick-tabs{gap:3px}.quick-tabs button{font-size:9px}}@media(min-width:700px){.broker-head{padding-left:max(16px,calc((100% - 760px)/2 + 16px));padding-right:max(16px,calc((100% - 760px)/2 + 16px))}}
     `;
     document.head.appendChild(style);
 
     const shell = document.createElement("div");
     shell.id = "brokerShell";
-    shell.innerHTML = `<header class="broker-head"><div class="head-row"><div class="brand">A股机会雷达<small>选股 · 高开概率 · 新闻情报</small></div><div class="market-status"><i class="market-dot" id="brokerDot"></i><span id="brokerStatus">就绪</span></div></div><div class="market-tape"><div class="tape-item"><b>沪深市场</b><span>实时行情</span></div><div class="tape-item"><b>量价资金</b><span>基础 + 技术</span></div><div class="tape-item"><b>T+1</b><span>历史统计</span></div></div><div class="head-actions"><button class="primary" id="proxyScreen">开始选股</button><button class="secondary" id="proxyMonitor">实时监控</button></div></header><main class="content-wrap"><div class="quick-tabs"><button data-target="screenArea" class="active">选股</button><button data-target="resultsSection">结果</button><button data-target="gapArea">高开</button><button data-target="newsArea">新闻</button></div><div class="radar-card"><div class="radar-title"><b>今日雷达</b><span>核心指标</span></div><div class="metric-grid"><div class="metric"><label>候选股票</label><strong id="dashCandidates">待选</strong><small>基础 + 技术</small></div><div class="metric"><label>历史高开</label><strong id="dashGap">—</strong><small>T+1 样本</small></div><div class="metric"><label>新闻快讯</label><strong id="dashNews">—</strong><small>近期信息</small></div></div></div><div id="moduleHost"></div></main><nav class="bottom-nav"><button data-target="screenArea" class="active"><b>⌂</b>选股</button><button data-target="resultsSection"><b>▦</b>结果</button><button data-target="gapArea"><b>◒</b>高开</button><button data-target="newsArea"><b>◉</b>新闻</button><button data-target="advancedArea"><b>☷</b>更多</button></nav>`;
+    shell.innerHTML = `<header class="broker-head"><div class="head-row"><div class="brand">A股机会雷达<small>选股 · 高开概率 · 新闻情报</small></div><div class="market-status"><i class="market-dot" id="brokerDot"></i><span id="brokerStatus">就绪</span></div></div><div class="market-tape"><div class="tape-item"><b>沪深市场</b><span>实时行情</span></div><div class="tape-item"><b>量价资金</b><span>基础 + 技术</span></div><div class="tape-item"><b>T+1</b><span>历史统计</span></div></div><div class="head-actions"><button class="primary" id="proxyScreen">开始选股</button><button class="secondary" id="proxyMonitor">实时监控</button></div></header><main class="content-wrap"><div class="quick-tabs"><button data-target="screenArea" class="active">选股</button><button data-target="gapArea">高开</button><button data-target="monitorArea">监控</button><button data-target="resonanceArea">共振</button><button data-target="resultsSection">结果</button><button data-target="advancedArea">更多</button></div><div class="radar-card"><div class="radar-title"><b>今日雷达</b><span>核心指标</span></div><div class="metric-grid"><div class="metric"><label>候选股票</label><strong id="dashCandidates">待选</strong><small>基础 + 技术</small></div><div class="metric"><label>历史高开</label><strong id="dashGap">—</strong><small>T+1 样本</small></div><div class="metric"><label>新闻快讯</label><strong id="dashNews">—</strong><small>近期信息</small></div></div></div><div id="moduleHost"></div></main><nav class="bottom-nav"><button data-target="screenArea" class="active"><b>⌂</b>选股</button><button data-target="resultsSection"><b>▦</b>结果</button><button data-target="gapArea"><b>◒</b>高开</button><button data-target="newsArea"><b>◉</b>新闻</button><button data-target="advancedArea"><b>☷</b>更多</button></nav>`;
     document.body.insertBefore(shell, document.body.firstChild);
 
     const host = $("#moduleHost");
@@ -55,7 +55,22 @@
     advanced.className = "advanced-zone";
     advanced.innerHTML = `<div class="advanced-title">高级工具</div>`;
     [tech,similar,logs].filter(Boolean).forEach((el) => advanced.appendChild(el));
-    host.appendChild(advanced);
+    const monitorPanel = document.createElement("section");
+    monitorPanel.id = "monitorArea";
+    monitorPanel.className = "module-card";
+    monitorPanel.innerHTML = '<h3>③ 实时监控</h3><p>独立任务：不继承普通选股条件，只监控盘中急速拉升和主力净流入 ≥ 1000 万。无需先运行“开始选股”。</p><div class="grid"><label class="field">刷新间隔（秒）<input id="monitorIntervalUi" type="number" min="15" value="15"></label><label class="field">急拉窗口（分钟）<input id="monitorRapidWindow" type="number" min="1" value="5"></label><label class="field">最小急拉涨幅 %<input id="monitorRapidPct" type="number" step="0.1" value="2"></label><label class="field">最小放量倍数<input id="monitorRapidVolume" type="number" step="0.1" value="1.5"></label><label class="field">跳过开盘分钟<input id="monitorSkipOpen" type="number" min="0" value="5"></label></div><label class="check"><input id="monitorNotifyUi" type="checkbox" checked>命中时发送提醒</label><div class="actions"></div>';
+    monitorPanel.querySelector(".actions").appendChild($("#monitorButton"));
+    const resonancePanel = document.createElement("section");
+    resonancePanel.id = "resonanceArea";
+    resonancePanel.className = "module-card";
+    resonancePanel.innerHTML = '<h3>④ 资金/机构共振</h3><p>完全独立运行，不自动叠加普通选股条件。选择一档规则后直接执行；结果进入“结果”页。</p><div id="resonanceHost"></div>';
+    const resonanceTitle = tech && $(".section-title", tech).find((x) => (x.textContent || "").includes("资金/机构共振"));
+    const boardTitle = tech && $(".section-title", tech).find((x) => (x.textContent || "").includes("板块与强势"));
+    if (resonanceTitle && boardTitle) { let n = resonanceTitle; const hostBox = $("#resonanceHost"); while (n && n !== boardTitle) { const next = n.nextElementSibling; hostBox.appendChild(n); n = next; } }
+    hostBox = $("#resonanceHost");
+    if (hostBox) { const btn = $("#resonanceButton"); if (btn) hostBox.appendChild(btn); }
+    host.appendChild(monitorPanel);
+    host.appendChild(resonancePanel);
     if (basic) basic.id = "screenArea";
     if (result) result.id = "resultsSection";
     if (gap) gap.id = "gapArea";
@@ -80,20 +95,24 @@
     const gh = gap && $(".help", gap);
     if (gh) gh.textContent = "高开概率来自历史 T+1 统计：使用历史相似条件，统计次日开盘相对前收的表现。历史统计不代表明日结果。";
 
-    [screen,$("#monitorButton"),$("#similarButton"),$("#backtestButton"),$("#gapOneButton"),$("#gapScanButton"),$("#cancelButton")].filter(Boolean).forEach((b) => {
-      b.style.position = "absolute"; b.style.left = "-99999px"; b.style.width = "1px"; b.style.height = "1px"; b.style.opacity = "0"; b.style.pointerEvents = "none";
-    });
     const click = (id) => { const b = $(id); if (b) b.click(); };
     $("#proxyScreen").onclick = () => click("#screenButton");
     $("#proxyMonitor").onclick = () => click("#monitorButton");
 
-    $$('[data-target]').forEach((b) => b.addEventListener("click", () => {
-      const el = document.getElementById(b.dataset.target);
-      if (!el) return;
-      if (el.tagName.toLowerCase() === "details") el.open = true;
-      el.scrollIntoView({ behavior: "smooth", block: "start" });
-      $$('[data-target]').forEach((x) => x.classList.toggle("active", x.dataset.target === b.dataset.target));
-    }));
+    const moduleTargets = ["screenArea","gapArea","monitorArea","resonanceArea","resultsSection","advancedArea"];
+    const showModule = (id) => {
+      moduleTargets.forEach((name) => {
+        const el = document.getElementById(name);
+        if (!el) return;
+        el.classList.toggle("ui-module-hidden", name !== id);
+      });
+      $('[data-target]').forEach((x) => x.classList.toggle("active", x.dataset.target === id));
+      const target = document.getElementById(id);
+      if (target && target.tagName.toLowerCase() === "details") target.open = true;
+      window.scrollTo(0, 0);
+    };
+    $('[data-target]').forEach((b) => b.addEventListener("click", () => showModule(b.dataset.target)));
+    showModule("screenArea");
 
     const status = $("#status");
     const updateState = () => {
@@ -140,6 +159,16 @@
 
     [basic,result,gap,news].filter(Boolean).forEach((el) => { el.open = false; });
     if (basic) basic.open = true;
+    // Independent monitor controls are intentionally not mirrored into the old technical section.
+    const monitorIds = ["monitorIntervalUi","monitorRapidWindow","monitorRapidPct","monitorRapidVolume","monitorSkipOpen"];
+    monitorIds.forEach((id) => {
+      const el = $("#" + id);
+      if (el) el.addEventListener("change", () => {});
+    });
+    const monitorNotify = $("#monitorNotifyUi");
+    if (monitorNotify) monitorNotify.addEventListener("change", () => {});
+    const oldMonitor = $("#monitorInterval");
+    if (oldMonitor) oldMonitor.closest("label.field")?.style.setProperty("opacity", "0.45");
   }
 
   if (document.readyState === "loading") document.addEventListener("DOMContentLoaded",boot,{once:true});
